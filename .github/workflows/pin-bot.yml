@@ -1,0 +1,71 @@
+name: pin-bot
+
+on:
+  schedule:
+    # Every Monday at 12:00 UTC
+    - cron: '0 12 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  pin:
+    name: Bump upstream installer hashes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run pin-installer.sh
+        run: bash scripts/pin-installer.sh
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet install.sh; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch upstream installer diff for PR body
+        id: upstream_diff
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          # Capture first 100 lines of current upstream installer for reviewer context
+          upstream_preview="$(curl -fsSL https://ourpai.ai/install.sh | head -100 || echo 'Failed to fetch')"
+          # Write to a file to avoid multiline env var issues
+          printf '%s\n' "${upstream_preview}" > /tmp/upstream-preview.txt
+
+      - name: Open PR on hash change
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'pin: bump upstream installer hash'
+          branch: pin-bot/bump-hashes
+          delete-branch: true
+          title: 'pin: bump upstream PAI installer + Bun hashes'
+          labels: pin-bot
+          body: |
+            ## Automated hash bump
+
+            `scripts/pin-installer.sh` detected a new upstream SHA-256.
+
+            **⚠️ REVIEWER ACTION REQUIRED:**
+            1. Read the upstream installer diff below before merging.
+            2. Verify the change is expected (routine update, not compromise).
+            3. A second reviewer is required for `pin-bot`-labeled PRs (configure in branch protection).
+
+            <details>
+            <summary>Upstream installer preview (first 100 lines)</summary>
+
+            ```bash
+            $(cat /tmp/upstream-preview.txt 2>/dev/null || echo 'Not available')
+            ```
+
+            </details>
+
+            ---
+            🤖 Opened by pin-bot workflow. Do **not** merge without reading the diff.

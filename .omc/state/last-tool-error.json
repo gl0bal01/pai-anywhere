@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"which runuser; sudo -iu pai bash -c 'cd /home/pai/.claude/PAI && for pair in TOOLS:Tools MEMORY:Memory ALGORITHM:Algorithm DOCUMENTATION:Documentation TEMPLATES:Templates; do u=${pair%:*};...",
+  "error": "Exit code 1\n/usr/sbin/runuser",
+  "timestamp": "2026-05-02T19:28:09.618Z",
+  "retry_count": 2
+}

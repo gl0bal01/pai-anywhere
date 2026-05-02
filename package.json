@@ -1,0 +1,28 @@
+{
+  "name": "pai-anywhere",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pai-anywhere": "./src/cli.ts"
+  },
+  "scripts": {
+    "doctor": "bun run src/cli.ts doctor",
+    "verify": "bun run src/cli.ts verify",
+    "gateway": "bun run src/cli.ts gateway",
+    "reset-access": "bun run src/cli.ts reset-access",
+    "typecheck": "bun run tsc --noEmit",
+    "test": "bun test",
+    "test:integration": "bun test src/gateway/integration.test.ts",
+    "vps:diagnostics": "bash scripts/collect-diagnostics.sh",
+    "vps:result": "bash scripts/vps-matrix-result.sh",
+    "vps:smoke": "bash scripts/vps-smoke.sh"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.13",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

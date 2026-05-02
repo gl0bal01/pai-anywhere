@@ -1,0 +1,27 @@
+name: shellcheck
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'uninstall.sh'
+      - 'scripts/*.sh'
+      - 'tests/*.sh'
+
+jobs:
+  shellcheck:
+    name: shellcheck -S warning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run shellcheck
+        run: |
+          shellcheck -S warning install.sh uninstall.sh
+          if ls scripts/*.sh 2>/dev/null | grep -q .; then
+            shellcheck -S warning scripts/*.sh
+          fi
+          if ls tests/*.sh 2>/dev/null | grep -q .; then
+            shellcheck -S warning tests/*.sh
+          fi

@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+
+# pai-anywhere local state
+.pai-anywhere/
+.pai-anywhere-test-*/
+*.log
+
+# Build outputs
+dist/
+coverage/

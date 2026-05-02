@@ -1,0 +1,11 @@
+# CODEOWNERS — pai-anywhere
+# See docs/HARDENING.md for the pin-bot second-reviewer policy.
+# NOTE: Branch protection must be configured manually in GitHub to require
+# a second approver for PRs labeled 'pin-bot'. See Phase 7 release checklist.
+
+# Default owner for everything
+* @gl0bal01
+
+# install.sh changes (including hash bumps) require explicit review
+install.sh @gl0bal01
+scripts/pin-installer.sh @gl0bal01

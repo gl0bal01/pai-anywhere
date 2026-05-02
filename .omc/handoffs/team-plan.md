@@ -1,0 +1,24 @@
+## Handoff: team-plan → team-exec
+
+- **Decided**: Hybrid bash + slim TS per approved plan rev2 at `.omc/plans/2026-05-02-strip-to-community-installer.md`. 7 phases. Phase 0 done by lead.
+- **Phase 0 completed**: git initial commit + `v0-pre-strip` tag, baseline saved to `.omc/research/strip-baseline.txt`, `CLAUDE.md` Reversibility row amended to name JSONL manifest mechanism.
+- **Rejected**: Pure bash + Caddy (Option B), TS-only refactor (Option C). See plan §Alternatives.
+- **Risks**: Bash idempotency budget tight (~350 SLOC); pin-bot rubber-stamp risk; Pulse allowlist drift on upstream upgrade. All mitigated in plan §Pre-Mortem.
+- **Files**: Plan, baseline LOC snapshot, CLAUDE.md amendment.
+- **Remaining**: Phases 1-5 (parallel), Phase 6 manual (defer to user), Phase 7 release tag (final).
+- **Worker assignments**:
+  - `bash-worker`: T1 install.sh+uninstall.sh, T4 pin-installer + CI workflows
+  - `ts-worker`: T2 slim TS, T3 gateway security
+  - `test-engineer`: T6 tests
+  - Lead writes Phase 5 docs (T5) after T1+T3 complete; lead runs verification (T7) after T5+T6
+- **Critical contracts**:
+  - JSONL manifest at `/etc/pai-anywhere/install-manifest.jsonl` — `install.sh` writes via `record()`; `uninstall.sh` reverses only manifest-recorded paths
+  - Pairing code: 20-char base32 via `randomBytes(15).toString("base64url")`
+  - Rate limit: single global bucket only (no XFF)
+  - Pulse allowlist: methods `GET/POST/HEAD`; paths `/`, `/healthz`, `/api/pulse/*`; tunable via `PAI_ANYWHERE_PULSE_ALLOW_PATHS`
+  - `/terminal` → 410 with `{status:"deferred",roadmap:"<url>"}`
+  - SHA-256 pin upstream PAI installer + Bun tarball; abort on mismatch
+  - Tailscale via signed apt repo, never `curl|sh`
+  - Pairing code: never raw to stdout; written to `/var/lib/pai-anywhere/pairing-code.txt` mode 0600
+  - Verify folded into doctor: `src/verify/` deleted, probes moved into `src/doctor/probes.ts`
+- **AC budget**: TS ≤600 SLOC stripped, install.sh ≤350 SLOC stripped, total ~1170 LOC code
