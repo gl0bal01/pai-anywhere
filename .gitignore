@@ -9,3 +9,9 @@ node_modules/
 # Build outputs
 dist/
 coverage/
+
+# OMC runtime/session noise (keep .omc/{plans,handoffs,artifacts,research} tracked)
+.omc/sessions/
+.omc/state/
+.omc/skills/
+.omc/project-memory.json

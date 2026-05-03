@@ -170,57 +170,48 @@ The private repo URL rule is precise: the tool may accept a user-provided privat
 
 ```text
 pai-anywhere/
-├── gap.md
-├── CLAUDE.md
-├── README.md
+├── install.sh                    # bash paste-installer (idempotent, manifest-recording)
+├── uninstall.sh                  # reverses only manifest-recorded paths
+├── CLAUDE.md                     # this file (build-time briefing)
+├── README.md                     # community-facing
 ├── package.json
-├── src/
-│   ├── cli.ts                    # install | doctor | verify | rollback | reset-access | uninstall | gateway
+├── src/                          # TypeScript: gateway + doctor only
+│   ├── cli.ts                    # gateway | doctor | verify | reset-access | help
 │   ├── doctor/
-│   │   └── inspect.ts            # read-only server/security inspection
-│   ├── install/
-│   │   ├── plan.ts               # dry-run mutation plan
-│   │   ├── foundation.ts         # manifest-owned foundation executor
-│   │   ├── dependencies.ts       # check-before-install dependency executor
-│   │   ├── pai-bootstrap.ts      # official PAI installer runner as managed user
-│   │   ├── systemd-apply.ts      # app bundle + service units
-│   │   ├── tailscale.ts          # login + Serve private only
-│   │   ├── systemd.ts            # template rendering
-│   │   ├── execution-report.ts
-│   │   ├── execution-types.ts
-│   │   ├── report.ts
+│   │   ├── inspect.ts            # read-only host inspection
+│   │   ├── probes.ts             # post-install verification probes
+│   │   ├── report.ts             # CLI-formatted output
 │   │   └── types.ts
 │   ├── gateway/
-│   │   ├── server.ts             # /pulse proxy; /terminal intentionally gated until implemented
-│   │   ├── auth.ts               # pairing code + signed cookie
-│   │   └── types.ts
-│   ├── verify/
-│   │   ├── probes.ts             # profile, PAI files, hooks, Pulse, gateway, Serve, manifest
-│   │   ├── report.ts
-│   │   └── types.ts
-│   ├── rollback/
-│   │   ├── apply.ts              # allowlisted manifest-owned rollback executor
-│   │   ├── plan.ts               # dry-run manifest-owned rollback plan
-│   │   ├── report.ts
-│   │   └── types.ts
+│   │   ├── server.ts             # Bun.serve loopback gateway; /pulse proxy
+│   │   ├── auth.ts               # pairing code + HMAC-signed cookie
+│   │   ├── types.ts
+│   │   └── *.test.ts             # unit + integration tests
 │   └── lib/
-│       ├── manifest.ts           # mutation ledger
-│       ├── listeners.ts          # ss/lsof listener inspection
-│       ├── redaction.ts          # log redaction
-│       └── paths.ts              # managed path defaults and env overrides
+│       └── paths.ts              # managed path resolution
 ├── docs/
+│   ├── QUICKSTART.md             # Hetzner + DigitalOcean walkthroughs
 │   ├── THREAT_MODEL.md
 │   ├── HARDENING.md
-│   ├── MOBILE.md
-│   ├── COEXISTENCE.md
-│   └── MIGRATION.md
-└── systemd/
-    ├── gateway.env.tmpl
-    ├── pai-anywhere.service.tmpl
-    └── pai-pulse.service.tmpl
+│   ├── VPS_TEST_MATRIX.md
+│   └── VPS_TEST_RESULTS.md
+├── scripts/
+│   ├── pin-installer.sh          # bumps PAI + Bun SHA-256 pins
+│   ├── vps-smoke.sh              # VPS test runner
+│   ├── vps-matrix-result.sh
+│   └── collect-diagnostics.sh
+└── tests/                        # bash regression scripts
+    ├── preserve-claude.sh
+    ├── sha256-mismatch.sh
+    ├── manifest-completeness.sh
+    ├── partial-install-rollback.sh
+    ├── uninstall-safety.sh
+    ├── pairing-code-leak.sh
+    ├── log-format.sh
+    └── container-install.sh
 ```
 
-No implementation should land until the security ISCs below are reflected in tests or clear manual verification steps.
+Install/rollback live in bash (install.sh, uninstall.sh) — TypeScript covers gateway + doctor only.
 
 ---
 
@@ -275,7 +266,7 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 | `oh-my-openagent/` (Sisyphus) | OpenAgent variant. Relevant for advanced coexistence docs. |
 | `pai-opencode/` | OpenCode adapter for PAI. Reference for non-Claude-Code PAI usage. |
 | `pai-review-mode/` | PAI review-flow specialization. |
-| `specfirst-skill/` | Spec-first skill; source of ISC/ISA discipline used in `gap.md`. |
+| `specfirst-skill/` | Spec-first skill; source of ISC/ISA discipline. |
 
 ---
 
@@ -284,7 +275,7 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 - `install.sh` (bash, ~448 stripped LOC) is the user-facing entrypoint. Paste-installs on fresh Ubuntu/Debian VPS. Idempotent functions: preflight, install_apt_deps, install_tailscale_apt (signed apt repo, never `curl|sh`), create_pai_user, install_bun_for_pai (SHA-256 verified), fetch_and_verify_pai (SHA-256 verified, abort on mismatch), run_pai_as_pai, install_gateway_app, generate_secrets (20-char base64url pairing code, 0600), write_systemd_units, tailscale_up_if_needed, tailscale_serve_private (refuses Funnel), verify, print_done.
 - `uninstall.sh` reads `/etc/pai-anywhere/install-manifest.jsonl` (intent-log JSONL written by `install.sh`'s `record()` helper) and reverses only manifest-recorded paths. ENOENT = skip. EACCES/symlink/owner-mismatch = abort. Unowned files inside target dirs are preserved.
 - `src/cli.ts` (~130 LOC) ships only: `gateway`, `doctor`, `verify`, `reset-access`, `help`. No install/rollback subcommands — those live in bash.
-- `src/gateway/` (~370 LOC) — Bun.serve loopback gateway. 20-char base64url pairing code (≥120 bits entropy). Single global rate-limit bucket (10 attempts / 15 min, no XFF). HMAC-signed session cookie. `/pulse/*` proxy with method allowlist (`GET`/`POST`/`HEAD`), path allowlist (`/`, `/healthz`, `/api/pulse/`, tunable via `PAI_ANYWHERE_PULSE_ALLOW_PATHS`), and 1MB body cap. `/terminal` returns 410 with roadmap link. Refuses to start if `PAI_ANYWHERE_PAIRING_CODE` env unset.
+- `src/gateway/` (~370 LOC) — Bun.serve loopback gateway. 20-char base64url pairing code (≥120 bits entropy). Single global rate-limit bucket (10 attempts / 15 min, no XFF). HMAC-signed session cookie. Proxies all paths to Pulse on `127.0.0.1:31337` (Pulse uses absolute `/_next/*`, `/agents`, `/telos` paths) with method allowlist (`GET`/`POST`/`HEAD`), 1MB body cap, and rejection of `/__gateway/*` + path-traversal. `/terminal` returns 410 with roadmap link. Refuses to start if `PAI_ANYWHERE_PAIRING_CODE` env unset.
 - `src/doctor/` (~620 LOC, includes folded-in verify probes) — read-only host inspection + post-install probes.
 - Hash pinning: `scripts/pin-installer.sh` + `.github/workflows/pin-bot.yml` (weekly cron). PRs labeled `pin-bot` require `CODEOWNERS` review.
 - Tests: `bun test` (gateway unit + integration), `tests/*.sh` (preserve-claude, sha256-mismatch, uninstall-safety, partial-install-rollback, manifest-completeness, pairing-code-leak), `shellcheck -S warning` CI gate.
@@ -294,10 +285,9 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 
 ## Working Rules For This Repo
 
-- Read [gap.md](./gap.md) before touching anything.
-- Build `doctor` and `install --dry-run` before mutating install behavior.
-- Any real mutation starts with `install --apply-foundation --yes`; later phases such as `install --apply-pai-bootstrap --yes` must prove manifest ownership before running.
-- Full install is `install --yes`; it runs foundation, dependencies, PAI bootstrap, reset-access, systemd, Tailscale Serve, and verify in order, stopping on the first failed phase.
+- Read this file + the actual `install.sh` before touching install behavior.
+- Build `doctor` first; verify probes before changing install logic.
+- `install.sh` is the entry point; phases run sequentially and stop on first failure (see `main()` at end).
 - PAI bootstrap must run `https://ourpai.ai/install.sh` only as the dedicated `pai` user, never as the invoking human user.
 - PAI bootstrap must refuse to run over an existing managed profile unless an explicit future reinstall flow is designed.
 - Default install must not modify, move, delete, or rewrite the invoking user's `~/.claude`.
@@ -322,7 +312,6 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 
 ## References
 
-- [gap.md](./gap.md) — full investigation, ISCs, decisions, sources
 - [docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md) — V1 threat model
 - Upstream PAI public installer: `https://ourpai.ai/install.sh`
 - Upstream PAI bundled installer: `../Personal_AI_Infrastructure/Releases/v5.0.0/.claude/install.sh`

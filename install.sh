@@ -636,6 +636,19 @@ print_done() {
   printf '%b\n' "${YELLOW}     run: pai-anywhere reset-access${NC}"
   printf '%b\n' "${YELLOW}     to rotate the pairing code and invalidate old sessions.${NC}"
   printf '\n'
+  printf '%b\n' "${BOLD}─── Use pai from Desktop/Laptop ─────────────────${NC}"
+  printf '\n'
+  printf '  Add this alias to ~/.zshrc (or ~/.bashrc) on each client device:\n'
+  printf '\n'
+  printf '%b\n' "${GREEN}    alias pai='ssh ${SUDO_USER:-${USER}}@${tailnet_url} -t \"sudo -iu pai -- pai\"'${NC}"
+  printf '\n'
+  printf '  Then type %bpai%b from anywhere — same memory, same auth, same VPS.\n' "${BOLD}" "${NC}"
+  printf '  Tailscale handles the network. SSH key handles the auth.\n'
+  printf '\n'
+  printf '%b\n' "${BOLD}─── Pulse dashboard (mobile / browser) ──────────${NC}"
+  printf '\n'
+  printf '  Open the URL above from any tailnet device, enter pairing code.\n'
+  printf '\n'
   if [[ -t 0 ]]; then
     read -r -p "  Press Enter once you have recorded the pairing code: "
     printf '\n'

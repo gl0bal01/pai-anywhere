@@ -101,6 +101,48 @@ If a check fails: see [THREAT_MODEL.md](./THREAT_MODEL.md) and [HARDENING.md](./
 
 ---
 
+## Connect from Desktop / Laptop / Mobile
+
+Goal: type `pai` from any device → same VPS, same memory, same auth.
+
+### Desktop & Laptop (SSH alias)
+
+The installer prints a copy-pasteable alias at the end. Add it to `~/.zshrc` (or `~/.bashrc`):
+
+```bash
+alias pai='ssh you@your-vps.tailnet.ts.net -t "sudo -iu pai -- pai"'
+```
+
+Reload your shell:
+
+```bash
+source ~/.zshrc
+```
+
+Now from anywhere:
+
+```bash
+pai
+```
+
+First time pai launches, run `/login` inside the REPL to authenticate Claude Code. Done once for the lifetime of the pai user.
+
+### Mobile (browser + Tailscale SSH app)
+
+- **Pulse dashboard:** install Tailscale (iOS/Android), open `https://<host>.<tailnet>.ts.net`, enter the pairing code.
+- **REPL on phone:** Tailscale's mobile app has built-in SSH. Tap host → SSH → user `pai` → run `pai`.
+
+### VPS itself
+
+```bash
+sudo -iu pai
+pai
+```
+
+Or alias it on the VPS too: `echo "alias paime='sudo -iu pai'" >> ~/.zshrc`.
+
+---
+
 ## Day 2 operations
 
 | Task | Command |
@@ -131,6 +173,6 @@ Tailscale free tier supports 100 devices on the personal plan — fine for one P
 
 - **Pairing page won't load:** confirm Tailscale is up on both VPS and your client (`tailscale status`). Confirm `pai-anywhere.service` is active.
 - **Pairing code rejected after multiple wrong attempts:** rate limit (10 attempts / 15 min). Wait or `sudo pai-anywhere reset-access --yes`.
-- **Pulse shows blank page:** path allowlist may be too tight after a Pulse upgrade. Try `PAI_ANYWHERE_PULSE_ALLOW_PATHS=/,/healthz,/api/pulse/,/api/v2/pulse/ systemctl restart pai-anywhere.service`.
+- **Pulse shows blank page:** check `journalctl -u pai-pulse.service -n 50` for upstream Pulse errors. Gateway proxies all paths to Pulse on `127.0.0.1:31337`; if Pulse is down, the gateway returns 502.
 - **`/terminal` returns 410:** expected. Browser terminal deferred to v0.2.
 - **Install aborts with "sha256 mismatch":** upstream PAI installer changed; wait for `pin-bot` PR to bump the pinned hash, or run `scripts/pin-installer.sh` locally + audit upstream diff before continuing.
