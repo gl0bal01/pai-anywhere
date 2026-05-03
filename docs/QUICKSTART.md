@@ -27,7 +27,7 @@ Either way you need:
 
 4. **Run installer**:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.1.0/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.1.1/install.sh | bash
    ```
    - When `tailscale up` prints a login URL, open it in a desktop browser logged into your Tailscale account. Click *Connect*.
    - Installer continues; ~3-5 minutes total.
@@ -61,7 +61,7 @@ If you lose the pairing code: `sudo pai-anywhere reset-access --yes` rotates it.
 
 4. **Run installer** — same one-liner:
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.1.0/install.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.1.1/install.sh | bash
    ```
    Same flow as Hetzner.
 
@@ -79,7 +79,7 @@ Paste this into the *User Data* box at server creation time:
 #cloud-config
 package_update: true
 runcmd:
-  - curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.1.0/install.sh | bash
+  - curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.1.1/install.sh | bash
 ```
 
 Server boots with installer running. Watch via `tail -f /var/log/cloud-init-output.log`. You still need to interactively `tailscale up` — SSH in and `journalctl -u tailscaled -f` to find the auth URL.
