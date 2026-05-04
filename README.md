@@ -101,7 +101,7 @@ Pulse on mobile (`https://<host>.<tailnet>.ts.net`) shows what PAI did, when, an
 
 | Layer | Protection |
 |---|---|
-| Network | Tailscale (private VPN). No public ports. Funnel forbidden. |
+| Network | Tailscale (private VPN). No public ports. Funnel forbidden. Restrict tailnet reach with [grants](./docs/TAILNET_ACCESS.md). |
 | SSH | Standard SSH key auth. Tailscale ACLs limit who connects. |
 | User | Dedicated `pai` system user. Password locked. Cannot login. |
 | Filesystem | Pulse + Gateway run with systemd `ProtectHome=read-only`. |
@@ -179,6 +179,7 @@ Re-run the installer. SHA-256 pin gets bumped via `pin-bot` weekly. Manifest tra
 - [QUICKSTART](./docs/QUICKSTART.md) — Hetzner $4 + DigitalOcean $6 walkthroughs
 - [THREAT_MODEL](./docs/THREAT_MODEL.md) — what we defend against
 - [HARDENING](./docs/HARDENING.md) — operator hardening notes
+- [TAILNET_ACCESS](./docs/TAILNET_ACCESS.md) — restrict who on the tailnet can reach the gateway
 - [CLAUDE.md](./CLAUDE.md) — internal architecture brief
 
 ## License

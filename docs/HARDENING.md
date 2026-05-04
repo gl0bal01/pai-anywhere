@@ -10,6 +10,7 @@ V1 must be private by default. This checklist defines what install, verify, and 
 - Tailscale Serve exposes only the loopback gateway to the tailnet.
 - Tailscale Funnel is never enabled.
 - `verify` must fail if Pulse is exposed on `0.0.0.0`, a non-loopback address, or if Funnel appears in Tailscale Serve status.
+- Restrict tailnet reach to the gateway with Tailscale grants. See [TAILNET_ACCESS](./TAILNET_ACCESS.md) for the recommended tag + grant policy and why per-IP banning (e.g. fail2ban) is the wrong layer for a loopback-bound, tailnet-only service.
 
 ## Gateway
 
