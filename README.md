@@ -110,6 +110,7 @@ Pulse on mobile (`https://<host>.<tailnet>.ts.net`) shows what PAI did, when, an
 | Secrets | Pairing code stored mode 0600. Never logged. |
 | Install | Every change recorded in `/etc/pai-anywhere/install-manifest.jsonl`. Reversible. |
 | Upstream | PAI installer + Bun pinned by SHA-256. Mismatch = abort. |
+| Backups | Optional age-encrypted daily snapshots (see [extras/backup/](./extras/backup/)). Operator-supplied; not auto-installed. |
 
 ---
 
@@ -155,6 +156,9 @@ v0.1 = single-tenant per Personal Use Boundary. Multi-tenant is out of scope (di
 **Q: What if upstream PAI updates?**
 Re-run the installer. SHA-256 pin gets bumped via `pin-bot` weekly. Manifest tracks all changes for clean rollback.
 
+**Q: How do I back up `~pai/.claude` and the gateway state?**
+Optional opt-in: see [`extras/backup/`](./extras/backup/) for an age-encrypted daily snapshot script + systemd timer + setup walkthrough. The installer does not deploy it; backup choices are opinionated (encryption, retention, off-site shape) so the operator owns them.
+
 ---
 
 ## What ships in v0.1
@@ -180,6 +184,7 @@ Re-run the installer. SHA-256 pin gets bumped via `pin-bot` weekly. Manifest tra
 - [THREAT_MODEL](./docs/THREAT_MODEL.md) — what we defend against
 - [HARDENING](./docs/HARDENING.md) — operator hardening notes
 - [TAILNET_ACCESS](./docs/TAILNET_ACCESS.md) — restrict who on the tailnet can reach the gateway
+- [extras/backup/](./extras/backup/) — opt-in encrypted daily backup script + systemd timer (operator-installed)
 - [CLAUDE.md](./CLAUDE.md) — internal architecture brief
 
 ## License

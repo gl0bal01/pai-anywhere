@@ -154,6 +154,7 @@ Or alias it on the VPS too: `echo "alias paime='sudo -iu pai'" >> ~/.zshrc`.
 | Restart gateway | `sudo systemctl restart pai-anywhere.service` |
 | Uninstall completely | `sudo /opt/pai-anywhere/uninstall.sh` |
 | Update PAI installer hash | open PR from `pin-bot` weekly cron |
+| Encrypted backups (opt-in) | see [`extras/backup/README.md`](../extras/backup/README.md) |
 
 ---
 
