@@ -55,7 +55,7 @@ V1 must be private by default. This checklist defines what install, verify, and 
 
 ## Encrypted Backups
 
-The installer ships `/usr/local/sbin/pai-backup` plus `pai-backup.timer` for daily age-encrypted snapshots of `home/pai/.claude`, `etc/pai-anywhere`, and `var/lib/pai-anywhere`. Off-site push is opt-in via `/etc/pai-anywhere/backup-offsite.env`.
+Reference scripts for daily age-encrypted snapshots live in [`extras/backup/`](../extras/backup/) (script + systemd unit + timer + offsite env example + README). The installer does not deploy them — the operator opts in by following `extras/backup/README.md`. The script captures `home/pai/.claude`, `etc/pai-anywhere`, and `var/lib/pai-anywhere`; off-site push is opt-in via `/etc/pai-anywhere/backup-offsite.env`.
 
 When wiring off-site backup, prefer the following operator pattern:
 

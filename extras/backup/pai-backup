@@ -1,0 +1,63 @@
+#!/bin/bash
+# Encrypted backup of pai-anywhere state.
+# Restore: age -d -i <identity.txt> < <FILE>.tar.age | tar -xzf - -C /
+set -euo pipefail
+
+BACKUP_DIR="/var/backups/pai-anywhere"
+RECIPIENT_FILE="/root/.config/pai-backup/recipient.pub"
+RETENTION_DAYS=14
+OFFSITE_ENV="/etc/pai-anywhere/backup-offsite.env"
+
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+
+if [[ ! -f "$RECIPIENT_FILE" ]]; then
+  echo "ERROR: recipient public key missing at $RECIPIENT_FILE" >&2
+  exit 1
+fi
+RECIPIENT="$(cat "$RECIPIENT_FILE")"
+
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+OUT="${BACKUP_DIR}/pai-${STAMP}.tar.age"
+TMP="${OUT}.tmp"
+
+# Stream tar -> age (no plaintext on disk)
+tar -czf - \
+  --exclude='node_modules' \
+  --exclude='.cache' \
+  --exclude='*.log' \
+  --exclude='.npm' \
+  --exclude='.bun/install/cache' \
+  -C / \
+  home/pai/.claude \
+  etc/pai-anywhere \
+  var/lib/pai-anywhere \
+  2>/dev/null \
+  | age -r "$RECIPIENT" -o "$TMP"
+
+mv "$TMP" "$OUT"
+chmod 600 "$OUT"
+
+# Local retention
+find "$BACKUP_DIR" -name 'pai-*.tar.age' -mtime "+${RETENTION_DAYS}" -delete
+
+# Off-site push (opt-in)
+OFFSITE_STATUS="skipped"
+if [[ -f "$OFFSITE_ENV" ]]; then
+  # shellcheck disable=SC1090
+  source "$OFFSITE_ENV"
+  if [[ -n "${REMOTE:-}" ]]; then
+    if rclone copy "$OUT" "$REMOTE" --no-traverse 2>>/var/log/pai-backup-offsite.log; then
+      OFFSITE_STATUS="pushed_to_${REMOTE}"
+      # Off-site retention (older than RETENTION_DAYS removed)
+      rclone delete "$REMOTE" --min-age "${RETENTION_DAYS}d" --include 'pai-*.tar.age' \
+        2>>/var/log/pai-backup-offsite.log || true
+    else
+      OFFSITE_STATUS="push_failed_see_/var/log/pai-backup-offsite.log"
+    fi
+  fi
+fi
+
+SIZE=$(stat -c%s "$OUT")
+COUNT=$(find "$BACKUP_DIR" -name 'pai-*.tar.age' | wc -l)
+echo "$(date -u +%FT%TZ) backup_ok size=${SIZE}B file=${OUT##*/} kept=${COUNT} offsite=${OFFSITE_STATUS}"

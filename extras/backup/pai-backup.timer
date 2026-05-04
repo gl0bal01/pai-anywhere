@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily pai-anywhere backup at 03:17 UTC
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=600
+Persistent=true
+Unit=pai-backup.service
+
+[Install]
+WantedBy=timers.target
