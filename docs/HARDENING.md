@@ -18,7 +18,7 @@ V1 must be private by default. This checklist defines what install, verify, and 
 - Pairing requires a numeric code with rate-limited failed attempts.
 - Session cookies are signed, HTTP-only, `SameSite=Strict`, and `Secure` in production.
 - Pairing code is supplied through `/etc/pai-anywhere/gateway.env` with mode `0600`.
-- `pai-anywhere reset-access --yes` rotates both the pairing code and session secret.
+- `sudo pai-anywhere reset-access` rotates both the pairing code and session secret. Must run as root because `gateway.env` lives in the root-owned `/etc/pai-anywhere/` directory; the CLI refuses to run as a non-root user to avoid half-rotation (session secret rotated in state dir, but `gateway.env` write fails with EACCES, leaving the pairing code unchanged).
 - Old gateway cookies must fail after reset-access and gateway restart.
 - Logs must not include pairing codes, cookies, API keys, OAuth tokens, Tailscale auth keys, or private repo URLs.
 
@@ -51,6 +51,28 @@ V1 must be private by default. This checklist defines what install, verify, and 
 - Managed PAI data under `/home/pai/.claude` is manual-review only; back it up before deleting.
 - Missing manifest means rollback is a no-op.
 - Invalid or secret-containing manifest blocks rollback until reviewed.
+
+## Encrypted Backups
+
+The installer ships `/usr/local/sbin/pai-backup` plus `pai-backup.timer` for daily age-encrypted snapshots of `home/pai/.claude`, `etc/pai-anywhere`, and `var/lib/pai-anywhere`. Off-site push is opt-in via `/etc/pai-anywhere/backup-offsite.env`.
+
+When wiring off-site backup, prefer the following operator pattern:
+
+- **Dedicated bucket** (e.g. `pai-anywhere-backups`) — do not share with unrelated workloads. R2 returns `404 NoSuchBucket` (not `403`) when a token cannot see a bucket; a successful write to bucket X with a token meant to be scoped to bucket Y proves the token's actual scope is wrong.
+- **Dedicated, bucket-scoped API token.** Object Read+Write on the backup bucket only. VPS compromise then leaks only backup creds, not other R2 workloads.
+- **Per-service rclone config** at `/etc/pai-anywhere/rclone.conf` (mode `0600`, owned `root:root`). Do not reuse `~/.config/rclone/rclone.conf` from a regular user — the per-service config keeps the service token blast radius separate from interactive use.
+- **Export `RCLONE_CONFIG` from `backup-offsite.env`**, e.g.:
+  ```
+  REMOTE=r2-pai:pai-anywhere-backups/pai-anywhere
+  export RCLONE_CONFIG=/etc/pai-anywhere/rclone.conf
+  ```
+  `pai-backup` sources this file, so the export reaches the rclone subprocess.
+- **No double encryption.** The tarball is already age-encrypted; a raw S3-compatible remote is sufficient. Skip rclone crypt for the off-site target.
+- **Smoke-test restore at least once.** Download the latest blob, decrypt with the age identity, list with `tar -tzf`. If this round-trip fails, the backup is theatre.
+
+The age private key (`/root/.config/pai-backup/identity.txt`) is the entire decryption authority. After confirming back-ups are pushing off-site, store the identity in an offline vault (password manager labelled `pai-backup-identity`, plus at least one second copy on encrypted media or paper) and `shred -u` the on-box copy. Backups continue to encrypt against `recipient.pub`. VPS compromise after this yields ciphertext only.
+
+If the operator deploys via a Claude Code or similar transcripted agent, treat any prior session that contained the identity, R2 credentials, or rclone-crypt password as compromised — rotate the affected secrets even after the agent transcript is closed, since `~/.claude/projects/**.jsonl` and `~/.claude/file-history/**` retain the values on disk.
 
 ## Release Gate
 

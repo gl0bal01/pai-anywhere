@@ -39,7 +39,7 @@ Either way you need:
    - Enter the pairing code
    - Land on PAI Pulse Life dashboard
 
-If you lose the pairing code: `sudo pai-anywhere reset-access --yes` rotates it.
+If you lose the pairing code: `sudo pai-anywhere reset-access` rotates it.
 
 ---
 
@@ -147,7 +147,7 @@ Or alias it on the VPS too: `echo "alias paime='sudo -iu pai'" >> ~/.zshrc`.
 
 | Task | Command |
 |---|---|
-| Rotate pairing code + invalidate sessions | `sudo pai-anywhere reset-access --yes` |
+| Rotate pairing code + invalidate sessions | `sudo pai-anywhere reset-access` |
 | Re-check health | `sudo pai-anywhere verify` |
 | Tail Pulse logs | `sudo journalctl -u pai-pulse.service -f` |
 | Tail gateway logs | `sudo journalctl -u pai-anywhere.service -f` |
@@ -172,7 +172,7 @@ Tailscale free tier supports 100 devices on the personal plan — fine for one P
 ## Troubleshooting
 
 - **Pairing page won't load:** confirm Tailscale is up on both VPS and your client (`tailscale status`). Confirm `pai-anywhere.service` is active.
-- **Pairing code rejected after multiple wrong attempts:** rate limit (10 attempts / 15 min). Wait or `sudo pai-anywhere reset-access --yes`.
+- **Pairing code rejected after multiple wrong attempts:** rate limit (10 attempts / 15 min). Wait or `sudo pai-anywhere reset-access`.
 - **Pulse shows blank page:** check `journalctl -u pai-pulse.service -n 50` for upstream Pulse errors. Gateway proxies all paths to Pulse on `127.0.0.1:31337`; if Pulse is down, the gateway returns 502.
 - **`/terminal` returns 410:** expected. Browser terminal deferred to v0.2.
 - **Install aborts with "sha256 mismatch":** upstream PAI installer changed; wait for `pin-bot` PR to bump the pinned hash, or run `scripts/pin-installer.sh` locally + audit upstream diff before continuing.

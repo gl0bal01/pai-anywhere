@@ -58,6 +58,17 @@ async function main(): Promise<void> {
 }
 
 function resetAccess(): void {
+  // gateway.env lives under /etc/pai-anywhere (root-owned). Refusing as non-root
+  // prevents half-rotation: gateway-secrets.json gets updated in stateDir, then
+  // the gateway.env writeAtomic fails with EACCES, leaving cookies invalidated
+  // but the pairing code unchanged.
+  if (typeof process.geteuid === "function" && process.geteuid() !== 0) {
+    console.error("reset-access must be run as root.");
+    console.error("Try: sudo pai-anywhere reset-access");
+    process.exitCode = 1;
+    return;
+  }
+
   const cfg = configDir();
   const state = stateDir();
   mkdirSync(cfg, { recursive: true, mode: 0o755 });
@@ -119,7 +130,7 @@ Usage:
 Commands:
   doctor       Read-only host inspection; --post-install checks running install
   verify       Post-install safety verification (alias: doctor --post-install)
-  reset-access Rotate gateway pairing code and session secret
+  reset-access Rotate gateway pairing code and session secret (requires root)
   gateway      Loopback-only private gateway
 `);
 }
