@@ -30,7 +30,3 @@ export function configDir(): string {
 export function manifestPath(): string {
   return process.env.PAI_ANYWHERE_MANIFEST || join(configDir(), "install-manifest.jsonl");
 }
-
-export function appInstallDir(): string {
-  return process.env.PAI_ANYWHERE_APP_DIR || "/opt/pai-anywhere";
-}

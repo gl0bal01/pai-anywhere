@@ -270,21 +270,6 @@ function pairingPage(error = ""): string {
   `);
 }
 
-function homePage(): string {
-  return page("pai-anywhere", `
-    <main class="panel">
-      <h1>pai-anywhere</h1>
-      <nav>
-        <a href="/pulse/">Open Pulse</a>
-        <span class="disabled">Terminal available in v0.2</span>
-      </nav>
-      <form method="post" action="/auth/logout">
-        <button type="submit">Log out</button>
-      </form>
-    </main>
-  `);
-}
-
 function page(title: string, body: string): string {
   return `<!doctype html>
 <html lang="en">

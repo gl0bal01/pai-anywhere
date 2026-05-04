@@ -11,8 +11,8 @@ BEFORE_FILE=""
 AFTER_FILE=""
 
 cleanup() {
-  [[ -n "${BEFORE_FILE}" ]] && rm -f "${BEFORE_FILE}"
-  [[ -n "${AFTER_FILE}" ]]  && rm -f "${AFTER_FILE}"
+  rm -f "${BEFORE_FILE}" "${AFTER_FILE}" 2>/dev/null
+  return 0
 }
 trap cleanup EXIT
 
