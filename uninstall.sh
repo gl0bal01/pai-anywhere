@@ -59,10 +59,11 @@ safe_remove() {
     return 0
   fi
 
-  # Symlink where regular file/dir expected → abort
+  # Manifest-recorded symlinks are safe to unlink; rm removes the link itself.
   if [[ -L "${target}" ]]; then
-    error "ABORT: '${target}' is a symlink — unexpected. Manual review required."
-    exit 1
+    rm -f "${target}"
+    info "Removed symlink: ${target}"
+    return 0
   fi
 
   # Permission check
@@ -71,7 +72,15 @@ safe_remove() {
     exit 1
   fi
 
-  # For directories: check for unowned content before removal
+  # /opt/pai-anywhere is an installer-owned app bundle. Its copied files are not
+  # individually manifest-recorded, so remove the bundle as one owned unit.
+  if [[ "${target}" == "${APP_DIR}" ]]; then
+    rm -rf "${target}"
+    info "Removed app bundle: ${target}"
+    return 0
+  fi
+
+  # For other directories: check for unowned content before removal.
   if [[ -d "${target}" ]]; then
     # Read manifest-recorded paths to know what we own
     local manifest_paths

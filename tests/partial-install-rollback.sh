@@ -48,12 +48,16 @@ printf '{"ts":"%s","kind":"directory","path":"%s","action":"create"}\n' "${NOW}"
 printf '{"ts":"%s","kind":"directory","path":"%s","action":"create"}\n' "${NOW}" "${APP_DIR}"    >> "${MANIFEST}"
 printf '{"ts":"%s","kind":"file","path":"%s","action":"create"}\n'      "${NOW}" "${CFG_DIR}/VERSION" >> "${MANIFEST}"
 printf '{"ts":"%s","kind":"user","path":"%s","action":"create"}\n'      "${NOW}" "${PAI_HOME}"   >> "${MANIFEST}"
+printf '{"ts":"%s","kind":"file","path":"%s","action":"create"}\n'      "${NOW}" "${PAI_HOME}/.claude/PAI/Pulse" >> "${MANIFEST}"
 
 # Create corresponding artefacts
 printf '0.1.0-partial\n' > "${CFG_DIR}/VERSION"
 useradd --system --create-home --home-dir "${PAI_HOME}" \
   --shell /bin/bash --comment "pai-anywhere test account" "${PAI_USER}" 2>/dev/null || true
 passwd -l "${PAI_USER}" 2>/dev/null || true
+mkdir -p "${PAI_HOME}/.claude/PAI"
+ln -s PULSE "${PAI_HOME}/.claude/PAI/Pulse"
+touch "${APP_DIR}/src/cli.ts"
 
 # ── Phases 9-15 did NOT run — no systemd units, no tailscale serve ─────────────
 printf '[info] Partial state created; running uninstall.sh --rollback...\n'
@@ -75,6 +79,16 @@ done
 # Directories may persist if the manifest file itself (not recorded) is still there.
 if [[ -f "${CFG_DIR}/VERSION" ]]; then
   printf '[FAIL] Owned file not removed by rollback: %s/VERSION\n' "${CFG_DIR}" >&2
+  FAIL=1
+fi
+
+if [[ -d "${APP_DIR}" ]]; then
+  printf '[FAIL] App bundle not removed by rollback: %s\n' "${APP_DIR}" >&2
+  FAIL=1
+fi
+
+if [[ -L "${PAI_HOME}/.claude/PAI/Pulse" ]]; then
+  printf '[FAIL] Managed symlink not removed by rollback: %s\n' "${PAI_HOME}/.claude/PAI/Pulse" >&2
   FAIL=1
 fi
 

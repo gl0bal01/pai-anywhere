@@ -187,6 +187,18 @@ Optional opt-in: see [`extras/backup/`](./extras/backup/) for an age-encrypted d
 - [extras/backup/](./extras/backup/) — opt-in encrypted daily backup script + systemd timer (operator-installed)
 - [CLAUDE.md](./CLAUDE.md) — internal architecture brief
 
+## Development
+
+```bash
+make check
+```
+
+That installs locked Bun dependencies, typechecks, runs Bun tests, shellchecks the shell entrypoints, and runs the non-root shell safety tests. Full VPS/container install smoke tests are explicit:
+
+```bash
+make test-install-container IMAGE=ubuntu:24.04
+```
+
 ## License
 
 MIT. Upstream PAI has its own license — see their repo.

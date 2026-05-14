@@ -63,6 +63,11 @@ sha256_verify() {
   info "SHA-256 OK: ${label}"
 }
 
+url_safe_b64() {
+  # $1 = random byte count; output = url-safe base64 (no padding, no newline)
+  openssl rand -base64 "$1" | tr '/+' '_-' | tr -d '=\n'
+}
+
 # ── trap: ERR → rollback, EXIT → pairing-code reminder ───────────────────────
 _err_trap() {
   error "Install failed at line ${BASH_LINENO[0]}. Running rollback via uninstall.sh …"
@@ -71,6 +76,7 @@ _err_trap() {
   if [[ -x "${script_dir}/uninstall.sh" ]]; then
     "${script_dir}/uninstall.sh" --rollback || true
   fi
+  exit 1
 }
 
 _exit_trap() {
@@ -100,6 +106,12 @@ preflight() {
     exit 1
   fi
 
+  # systemd is required for tailscaled, Pulse, and the gateway services.
+  if ! command -v systemctl &>/dev/null || [[ ! -d /run/systemd/system ]]; then
+    error "systemd is required. Run pai-anywhere on a booted Ubuntu/Debian VPS, not a minimal container."
+    exit 1
+  fi
+
   # Refuse if VERSION_FILE missing but APP_DIR already exists (leftover state)
   if [[ ! -f "${VERSION_FILE}" ]] && [[ -d "${APP_DIR}" ]]; then
     error "${APP_DIR} already exists but ${VERSION_FILE} is missing."
@@ -123,7 +135,7 @@ preflight() {
 
 install_apt_deps() {
   phase "apt-deps"
-  local pkgs=(curl ca-certificates gnupg fail2ban ufw git rsync jq)
+  local pkgs=(curl ca-certificates gnupg fail2ban ufw git rsync jq unzip)
   local missing=()
   for pkg in "${pkgs[@]}"; do
     if ! dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q "install ok installed"; then
@@ -137,7 +149,7 @@ install_apt_deps() {
   fi
   info "Installing: ${missing[*]}"
   apt-get update -qq
-  apt-get install -y -qq "${missing[@]}"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
   phase_ok "apt-deps"
 }
 
@@ -171,8 +183,7 @@ install_tailscale_apt() {
   fi
 
   apt-get update -qq
-  record "file" "/usr/bin/tailscale" "create"
-  apt-get install -y -qq tailscale
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tailscale
   phase_ok "tailscale"
 }
 
@@ -406,12 +417,12 @@ generate_secrets() {
   chown "${PAI_USER}:${PAI_USER}" "${STATE_DIR}"
 
   local pairing_file="${STATE_DIR}/pairing-code.txt"
-  local session_file="${STATE_DIR}/session-secret.txt"
+  local secrets_file="${STATE_DIR}/gateway-secrets.json"
 
   if [[ ! -f "${pairing_file}" ]]; then
     record "file" "${pairing_file}" "create"
     # 20-char URL-safe base64 from 15 random bytes → 120 bits entropy
-    openssl rand -base64 15 | tr '/+' '_-' | tr -d '=' | tr -d '\n' > "${pairing_file}"
+    url_safe_b64 15 > "${pairing_file}"
     chmod 0600 "${pairing_file}"
     chown "${PAI_USER}:${PAI_USER}" "${pairing_file}"
     info "Pairing code generated."
@@ -419,24 +430,28 @@ generate_secrets() {
     info "Pairing code already exists."
   fi
 
-  if [[ ! -f "${session_file}" ]]; then
-    record "file" "${session_file}" "create"
-    # 32 bytes (256 bits) session HMAC secret
-    openssl rand -hex 32 > "${session_file}"
-    chmod 0600 "${session_file}"
-    chown "${PAI_USER}:${PAI_USER}" "${session_file}"
-    info "Session secret generated."
+  if [[ ! -f "${secrets_file}" ]]; then
+    record "file" "${secrets_file}" "create"
+    # 256 bits of entropy, base64url-encoded. The gateway reads this JSON file.
+    local session_secret
+    session_secret="$(url_safe_b64 32)"
+    jq -n --arg ts "$(date -u +%FT%TZ)" --arg s "${session_secret}" \
+      '{schema:"pai-anywhere.gateway-secrets.v1",createdAt:$ts,sessionSecret:$s}' \
+      > "${secrets_file}"
+    chmod 0600 "${secrets_file}"
+    chown "${PAI_USER}:${PAI_USER}" "${secrets_file}"
+    info "Gateway session secret generated."
   else
-    info "Session secret already exists."
+    info "Gateway session secret already exists."
   fi
 
-  # Write gateway.env for systemd EnvironmentFile (pairing code injected here)
+  # Write gateway.env for systemd EnvironmentFile (pairing code injected here).
+  # Session secrets live in ${secrets_file}; do not duplicate them in env.
   local env_file="${CFG_DIR}/gateway.env"
   record "file" "${env_file}" "create"
   local pairing
   pairing="$(cat "${pairing_file}")"
-  printf 'PAI_ANYWHERE_PAIRING_CODE=%s\nPAI_ANYWHERE_SESSION_SECRET=%s\n' \
-    "${pairing}" "$(cat "${session_file}")" > "${env_file}"
+  printf 'PAI_ANYWHERE_PAIRING_CODE=%s\n' "${pairing}" > "${env_file}"
   chmod 0600 "${env_file}"
   chown "root:${PAI_USER}" "${env_file}"
   phase_ok "secrets"
