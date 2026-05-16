@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
 import { hostname, platform, release, userInfo } from "node:os";
-import { spawnSync } from "node:child_process";
 import {
   currentUserClaudeDir,
   managedClaudeDir,
@@ -8,6 +7,15 @@ import {
   managedUser,
   manifestPath,
 } from "../lib/paths";
+import {
+  cmdExists,
+  firstLine,
+  getListeners,
+  isLoopback,
+  readFileSafe,
+  run,
+  safeJson,
+} from "../lib/sys";
 import type { DoctorCheck, DoctorReport } from "./types";
 
 const DEPS = [
@@ -185,30 +193,6 @@ function checkManifest(): DoctorCheck {
 
 // --- helpers ---
 
-function run(cmd: string[], ms = 5_000): { code: number | null; out: string; err: string } {
-  const [bin, ...a] = cmd;
-  if (!bin) return { code: null, out: "", err: "empty command" };
-  const r = spawnSync(bin, a, { encoding: "utf8", timeout: ms, maxBuffer: 1024 * 1024 });
-  return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
-}
-
-function cmdExists(name: string): boolean {
-  return spawnSync("sh", ["-lc", `command -v '${name.replaceAll("'", "'\\''")}' >/dev/null 2>&1`],
-    { timeout: 2_000 }).status === 0;
-}
-
-function firstLine(s: string): string {
-  return s.split(/\r?\n/).find((l) => l.trim().length > 0)?.trim() ?? "";
-}
-
-function readFileSafe(path: string): string {
-  try { return readFileSync(path, "utf8"); } catch { return ""; }
-}
-
-function safeJson(s: string): unknown {
-  try { return JSON.parse(s) as unknown; } catch { return null; }
-}
-
 function safeUser(): { username: string; uid: number | null } {
   try {
     const u = userInfo();
@@ -228,17 +212,3 @@ function readOsRelease(): Record<string, string> {
   } catch { /* ignore */ }
   return out;
 }
-
-function getListeners(): string[] {
-  const cmd = cmdExists("ss") ? ["ss", "-lntup"] : cmdExists("lsof") ? ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"] : null;
-  if (!cmd) return [];
-  return run(cmd, 5_000).out.split(/\r?\n/).filter((l) => l.trim().length > 0);
-}
-
-function isLoopback(line: string): boolean {
-  return /\b127\.\d+\.\d+\.\d+:/i.test(line)
-    || /\[::1\]:/i.test(line)
-    || /\blocalhost:/i.test(line)
-    || /\b::1:/i.test(line);
-}
-

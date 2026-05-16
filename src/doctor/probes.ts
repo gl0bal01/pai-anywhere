@@ -1,13 +1,26 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { currentUserClaudeDir, managedClaudeDir, manifestPath } from "../lib/paths";
+import {
+  cmdExists,
+  firstLine,
+  getListeners,
+  isLoopback,
+  readDirSafe,
+  readFileSafe,
+  run,
+  safeJson,
+  safeLstat,
+  safeRealpath,
+  safeStat,
+} from "../lib/sys";
 import type { PostInstallProbe, PostInstallReport } from "./types";
 
 const PULSE_PORT = 31337;
 const PULSE_URL = `http://127.0.0.1:${PULSE_PORT}`;
 const GATEWAY_SERVICE = "pai-anywhere.service";
-const GATEWAY_URL = process.env.PAI_ANYWHERE_GATEWAY_URL || "http://127.0.0.1:8787";
+const GATEWAY_PORT = process.env.PAI_ANYWHERE_GATEWAY_PORT || "8787";
+const GATEWAY_URL = process.env.PAI_ANYWHERE_GATEWAY_URL || `http://127.0.0.1:${GATEWAY_PORT}`;
 
 export async function runPostInstallProbes(): Promise<PostInstallReport> {
   const claudeConfigDir = managedClaudeDir();
@@ -171,7 +184,7 @@ function gatewayService(): PostInstallProbe {
 }
 
 async function gatewayAuthGate(): Promise<PostInstallProbe> {
-  const health = await fetchStatus(`${GATEWAY_URL}/healthz`, 1_500);
+  const health = await fetchStatus(`${GATEWAY_URL}/__gateway/healthz`, 1_500);
   if (!health.ok)
     return p("gateway.auth_gate", "Gateway authentication gate", "fail", "Gateway health endpoint did not respond", { url: GATEWAY_URL });
   const prot = await fetchStatus(`${GATEWAY_URL}/pulse`, 1_500);
@@ -214,60 +227,6 @@ function p(
   details?: Record<string, unknown>,
 ): PostInstallProbe {
   return { id, title, status, summary, ...(details && Object.keys(details).length > 0 ? { details } : {}) };
-}
-
-// --- runtime helpers ---
-function run(cmd: string[], ms = 5_000): { code: number | null; out: string; err: string } {
-  const [bin, ...a] = cmd;
-  if (!bin) return { code: null, out: "", err: "empty command" };
-  const r = spawnSync(bin, a, { encoding: "utf8", timeout: ms, maxBuffer: 1024 * 1024 });
-  return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
-}
-
-function cmdExists(name: string): boolean {
-  return spawnSync("sh", ["-lc", `command -v '${name.replaceAll("'", "'\\''")}' >/dev/null 2>&1`],
-    { timeout: 2_000 }).status === 0;
-}
-
-function firstLine(s: string): string {
-  return s.split(/\r?\n/).find((l) => l.trim().length > 0)?.trim() ?? "";
-}
-
-function readFileSafe(path: string): string {
-  try { return readFileSync(path, "utf8"); } catch { return ""; }
-}
-
-function safeJson(s: string): unknown {
-  try { return JSON.parse(s) as unknown; } catch { return null; }
-}
-
-function readDirSafe(path: string): string[] {
-  try { return readdirSync(path); } catch { return []; }
-}
-
-function safeStat(path: string): ReturnType<typeof statSync> | null {
-  try { return statSync(path); } catch { return null; }
-}
-
-function safeLstat(path: string): ReturnType<typeof lstatSync> | null {
-  try { return lstatSync(path); } catch { return null; }
-}
-
-function safeRealpath(path: string): string | null {
-  try { return realpathSync(path); } catch { return null; }
-}
-
-function getListeners(): string[] {
-  const cmd = cmdExists("ss") ? ["ss", "-lntup"] : cmdExists("lsof") ? ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"] : null;
-  if (!cmd) return [];
-  return run(cmd, 5_000).out.split(/\r?\n/).filter((l) => l.trim().length > 0);
-}
-
-function isLoopback(line: string): boolean {
-  return /\b127\.\d+\.\d+\.\d+:/i.test(line)
-    || /\[::1\]:/i.test(line)
-    || /\blocalhost:/i.test(line)
-    || /\b::1:/i.test(line);
 }
 
 async function fetchStatus(url: string, ms: number): Promise<{ ok: boolean; status?: number }> {

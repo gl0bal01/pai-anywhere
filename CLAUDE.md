@@ -50,7 +50,7 @@ The default user experience is:
   - PAI's managed profile is `/home/pai/.claude`.
 - Optional Telegram text notifications for mobile.
 - Migration verifier for the Discussion #617 "vanilla claude post-migration" trap.
-- Read-only `doctor`, `install --dry-run`, manifest-recorded changes, rollback, reset-access, uninstall.
+- Read-only `doctor`, manifest-recorded changes, rollback, reset-access, uninstall. (`install --dry-run` deferred to v0.3; v0.1 installer is idempotent bash with explicit phases.)
 - Hardening checklist and threat model.
 - OMC + oh-my-openagent coexistence notes for advanced non-isolated installs.
 - Runtime adapter boundary for future OpenCode/OpenAgent support.

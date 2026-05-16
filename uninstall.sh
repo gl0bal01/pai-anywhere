@@ -166,11 +166,12 @@ main() {
 
   info "Processing manifest: ${MANIFEST}"
 
-  # Process entries in reverse order (LIFO)
+  # Process entries in reverse order (LIFO). awk-reverse keeps this POSIX-clean —
+  # tac is missing on some minimal container images (busybox builds without GNU coreutils).
   local entries
   entries="$(jq -r '[.kind, .path, .action] | @tsv' "${MANIFEST}" 2>/dev/null)"
   local reversed
-  reversed="$(echo "${entries}" | tac)"
+  reversed="$(printf '%s\n' "${entries}" | awk '{a[NR]=$0} END {for (i=NR;i>=1;i--) print a[i]}')"
 
   local needs_daemon_reload=0
 
@@ -187,7 +188,15 @@ main() {
         needs_daemon_reload=1
         ;;
       user)
-        remove_user
+        # In rollback mode (called from install.sh ERR trap) leave the pai user
+        # in place. The user/home may pre-date this install attempt or may hold
+        # partially-installed PAI data the operator wants to inspect before manual
+        # removal. Full uninstall still removes the user.
+        if [[ "${rollback_mode}" -eq 1 ]]; then
+          info "Rollback mode: leaving user '${PAI_USER}' and ${PAI_HOME} in place."
+        else
+          remove_user
+        fi
         ;;
       *)
         warn "Unknown manifest kind '${kind}' for path '${path}' — skipping."

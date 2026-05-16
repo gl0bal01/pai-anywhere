@@ -11,7 +11,6 @@ redact_stream() {
     -e 's/github_pat_[a-zA-Z0-9_]{40,}/[REDACTED_GITHUB_PAT]/g' \
     -e 's/tskey-[a-zA-Z0-9_-]{20,}/[REDACTED_TAILSCALE_KEY]/g' \
     -e 's#https://[^/@[:space:]]+:[^/@[:space:]]+@#https://[REDACTED_CREDENTIALS]@#g' \
-    -e 's/[0-9]{6,}/[REDACTED_NUMERIC_CODE]/g' \
     -e 's/pai_anywhere_session=[^;[:space:]]+/pai_anywhere_session=[REDACTED_COOKIE]/g'
 }
 
@@ -88,8 +87,8 @@ collect() {
   fi
 
   section "manifest"
-  if [ -f /etc/pai-anywhere/install-manifest.json ]; then
-    sed -E 's/"sessionSecret": *"[^"]+"/"sessionSecret": "[REDACTED]"/g' /etc/pai-anywhere/install-manifest.json
+  if [ -f /etc/pai-anywhere/install-manifest.jsonl ]; then
+    sed -E 's/"sessionSecret": *"[^"]+"/"sessionSecret": "[REDACTED]"/g' /etc/pai-anywhere/install-manifest.jsonl
   else
     echo "manifest missing"
   fi

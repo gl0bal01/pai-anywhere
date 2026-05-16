@@ -18,10 +18,10 @@ for arg in "$@"; do
       cat <<'USAGE'
 Usage: scripts/vps-smoke.sh [--apply] [--post-reboot] [--rollback]
 
-Default mode is read-only baseline: doctor, dry-run plan, verify, diagnostics.
---apply runs the gated installer with sudo/root.
+Default mode is read-only baseline: doctor, verify-expected-fail, diagnostics.
+--apply runs install.sh with sudo/root then verifies.
 --post-reboot runs verification and service diagnostics after reboot.
---rollback runs rollback dry-run and apply with sudo/root.
+--rollback runs uninstall.sh --rollback with sudo/root.
 USAGE
       exit 0
       ;;
@@ -51,7 +51,6 @@ redact_stream() {
     -e 's/github_pat_[a-zA-Z0-9_]{40,}/[REDACTED_GITHUB_PAT]/g' \
     -e 's/tskey-[a-zA-Z0-9_-]{20,}/[REDACTED_TAILSCALE_KEY]/g' \
     -e 's#https://[^/@[:space:]]+:[^/@[:space:]]+@#https://[REDACTED_CREDENTIALS]@#g' \
-    -e 's/[0-9]{6,}/[REDACTED_NUMERIC_CODE]/g' \
     -e 's/pai_anywhere_session=[^;[:space:]]+/pai_anywhere_session=[REDACTED_COOKIE]/g'
 }
 
@@ -102,35 +101,6 @@ run_expected_fail() {
   log "FAIL $name unexpectedly passed"
   fail_count=$((fail_count + 1))
   return 1
-}
-
-run_allow_status() {
-  local name="$1"
-  local allowed="$2"
-  shift 2
-  local outfile="$OUTPUT_DIR/$name.log"
-
-  log ""
-  log "== $name =="
-  log "Command: $*"
-
-  (cd "$ROOT_DIR" && "$@") >"$outfile.raw" 2>&1
-  local status=$?
-  redact_stream <"$outfile.raw" >"$outfile"
-  rm -f "$outfile.raw"
-
-  case " $allowed " in
-    *" $status "*)
-      log "PASS $name exit=$status"
-      pass_count=$((pass_count + 1))
-      return 0
-      ;;
-    *)
-      log "FAIL $name exit=$status expected=[$allowed]"
-      fail_count=$((fail_count + 1))
-      return "$status"
-      ;;
-  esac
 }
 
 run_optional() {
@@ -253,10 +223,9 @@ main() {
   snapshot_claude before
 
   run_step doctor "$BUN_BIN" run src/cli.ts doctor --json
-  run_allow_status plan "0 2" "$BUN_BIN" run src/cli.ts install --dry-run --json
 
   if [ "$APPLY" -eq 1 ]; then
-    run_sudo_step install "$BUN_BIN" run src/cli.ts install --yes --json || true
+    run_sudo_step install bash "$ROOT_DIR/install.sh" || true
     snapshot_claude after
     compare_claude
     run_step verify-after-install "$BUN_BIN" run src/cli.ts verify --json || true
@@ -267,10 +236,7 @@ main() {
   fi
 
   if [ "$ROLLBACK" -eq 1 ]; then
-    run_step rollback-plan "$BUN_BIN" run src/cli.ts rollback --dry-run --json
-    run_sudo_step rollback-apply "$BUN_BIN" run src/cli.ts rollback --yes --json || true
-  else
-    run_step rollback-plan "$BUN_BIN" run src/cli.ts rollback --dry-run --json
+    run_sudo_step rollback-apply bash "$ROOT_DIR/uninstall.sh" --rollback || true
   fi
 
   run_optional diagnostics scripts/collect-diagnostics.sh "$OUTPUT_DIR/diagnostics.txt"

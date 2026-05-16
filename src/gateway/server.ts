@@ -44,7 +44,7 @@ export function gatewayConfigFromArgs(args: string[]): GatewayConfig {
     stateDir: stateDir(),
     pairingCode: envPairingCode,
     cookieSecure: process.env.PAI_ANYWHERE_COOKIE_SECURE !== "0",
-    sessionTtlSeconds: Number.parseInt(process.env.PAI_ANYWHERE_SESSION_TTL_SECONDS || `${12 * 60 * 60}`, 10),
+    sessionTtlSeconds: Number.parseInt(process.env.PAI_ANYWHERE_SESSION_TTL_SECONDS || `${24 * 60 * 60}`, 10),
     pulseOrigin: process.env.PAI_ANYWHERE_PULSE_ORIGIN || "http://127.0.0.1:31337",
   };
 }
@@ -307,7 +307,8 @@ function escapeHtml(value: string): string {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 function valueAfter(args: string[], flag: string): string | null {

@@ -75,7 +75,7 @@ Existing user profile
 The installer must:
 
 - Run `doctor`-equivalent checks before mutation.
-- Support `install --dry-run`.
+- Surface intended phases before mutation. (`install --dry-run` flag deferred to v0.3; v0.1 installer is idempotent bash and prints each phase before acting.)
 - Check whether Bun, Git, Tailscale, fail2ban, and ufw already exist before installation.
 - Reuse existing dependencies where safe.
 - Never overwrite host config files wholesale.
@@ -214,7 +214,6 @@ Each threat row maps to the file/lines that mitigate it.
 
 V1 is not release-ready until:
 
-- `install --dry-run` exists.
 - `doctor` exists.
 - default install preserves existing `~/.claude`.
 - Pulse and gateway are loopback-only.
