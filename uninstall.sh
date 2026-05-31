@@ -36,8 +36,11 @@ is_allowed_path() {
   local target="$1"
   local prefix
   for prefix in "${ALLOWED_PREFIXES[@]}"; do
+    # Match the prefix exactly, or as a path-segment boundary (prefix + "/").
+    # A bare "${prefix}"* glob would also match siblings like "/home/pai-evil"
+    # for the "/home/pai" prefix; the "/" boundary prevents that.
     case "${target}" in
-      "${prefix}"*) return 0 ;;
+      "${prefix}"|"${prefix}/"*) return 0 ;;
     esac
   done
   return 1

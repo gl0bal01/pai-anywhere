@@ -139,6 +139,12 @@ async function pair(request: Request, config: GatewayConfig, secrets: GatewaySec
     return json({ error: "too many pairing attempts" }, { status: 429 });
   }
 
+  const contentType = request.headers.get("content-type") || "";
+  const isMultipart = contentType.includes("multipart/form-data");
+  const isUrlEncoded = contentType.includes("application/x-www-form-urlencoded");
+  const formPairing = isMultipart || isUrlEncoded;
+
+  // Fast reject on a declared oversize body…
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > MAX_PAIRING_BODY_BYTES) {
     recordFailedPairing();
@@ -146,16 +152,27 @@ async function pair(request: Request, config: GatewayConfig, secrets: GatewaySec
   }
 
   let provided = "";
-  const contentType = request.headers.get("content-type") || "";
-  const formPairing = contentType.includes("application/x-www-form-urlencoded")
-    || contentType.includes("multipart/form-data");
   try {
-    if (formPairing) {
-      const form = await request.formData();
+    // …then enforce the cap on the actual bytes (Content-Length is spoofable / omittable).
+    const buf = await request.arrayBuffer();
+    if (buf.byteLength > MAX_PAIRING_BODY_BYTES) {
+      recordFailedPairing();
+      return json({ error: "request body too large" }, { status: 413 });
+    }
+    if (isMultipart) {
+      // Re-parse the buffered bytes as multipart without re-reading the stream.
+      const form = await new Request("http://localhost/", {
+        method: "POST",
+        headers: { "content-type": contentType },
+        body: buf,
+      }).formData();
       const value = form.get("code");
       provided = typeof value === "string" ? value.trim() : "";
+    } else if (isUrlEncoded) {
+      const value = new URLSearchParams(new TextDecoder().decode(buf)).get("code");
+      provided = value ? value.trim() : "";
     } else {
-      const body = await request.json() as unknown;
+      const body = JSON.parse(new TextDecoder().decode(buf)) as unknown;
       if (body && typeof body === "object" && typeof (body as Record<string, unknown>).code === "string") {
         provided = ((body as Record<string, unknown>).code as string).trim();
       }
@@ -207,22 +224,57 @@ async function proxyPulse(request: Request, config: GatewayConfig): Promise<Resp
     return json({ error: "invalid path" }, { status: 400 });
   }
 
-  // Body cap
-  const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
-  if (contentLength > MAX_PULSE_BODY_BYTES) {
-    return json({ error: "request body too large" }, { status: 413 });
+  // Reject protocol-relative / network-path references. A pathname beginning
+  // with "//" (or backslashes that WHATWG normalizes to "//") would, if passed
+  // as the first argument to `new URL(path, base)`, override the upstream host
+  // and turn this proxy into an SSRF primitive (e.g. //169.254.169.254/...).
+  // Pulse never serves "//"-prefixed paths, so reject them outright.
+  if (url.pathname.startsWith("//")) {
+    return json({ error: "invalid path" }, { status: 400 });
   }
 
-  const upstream = new URL(url.pathname + url.search, config.pulseOrigin);
+  // Build the upstream URL from a FIXED origin and copy only path + query.
+  // Never use `new URL(path, origin)` here — see the "//" host-override note above.
+  const upstream = new URL(config.pulseOrigin);
+  upstream.pathname = url.pathname;
+  upstream.search = url.search;
+
+  // Enforce the body cap on the actual bytes, not just the (spoofable)
+  // Content-Length header. Buffer non-idempotent bodies up to the cap.
+  const hasBody = request.method !== "GET" && request.method !== "HEAD";
+  let body: ArrayBuffer | undefined;
+  if (hasBody) {
+    const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
+    if (contentLength > MAX_PULSE_BODY_BYTES) {
+      return json({ error: "request body too large" }, { status: 413 });
+    }
+    try {
+      body = await request.arrayBuffer();
+    } catch {
+      return json({ error: "invalid request body" }, { status: 400 });
+    }
+    if (body.byteLength > MAX_PULSE_BODY_BYTES) {
+      return json({ error: "request body too large" }, { status: 413 });
+    }
+  }
+
   const headers = new Headers(request.headers);
   headers.delete("cookie");
   headers.delete("host");
+  // Defense in depth: do not let a client forge forwarding/identity headers to
+  // the loopback Pulse upstream.
+  headers.delete("x-forwarded-for");
+  headers.delete("x-forwarded-host");
+  headers.delete("x-forwarded-proto");
+  headers.delete("forwarded");
+  // Body was re-buffered; let fetch recompute Content-Length from `body`.
+  headers.delete("content-length");
 
   try {
     return await fetch(upstream, {
       method: request.method,
       headers,
-      body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+      body,
       redirect: "manual",
     });
   } catch {

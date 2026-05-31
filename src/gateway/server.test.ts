@@ -231,6 +231,41 @@ describe("path traversal", () => {
   });
 });
 
+// ── SSRF: protocol-relative / network-path host override ──────────────────────
+
+describe("proxy host override (SSRF)", () => {
+  test("authenticated //evil.example/foo is rejected, never reaches another host", async () => {
+    // A "//host" path would override the upstream origin if the proxy used
+    // `new URL(path, origin)`. It must be rejected with 400 (not proxied).
+    const res = await handleGatewayRequest(
+      authedReq("http://127.0.0.1//evil.example/foo"),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("authenticated backslash network-path (\\\\evil.example) is rejected", async () => {
+    // WHATWG normalizes leading backslashes to "//", so this is the same attack.
+    const res = await handleGatewayRequest(
+      authedReq("http://127.0.0.1/\\\\evil.example/foo"),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  test("a normal path still proxies to the configured Pulse origin", async () => {
+    const res = await handleGatewayRequest(
+      authedReq("http://127.0.0.1/agents"),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("ok");
+  });
+});
+
 // ── Body cap ──────────────────────────────────────────────────────────────────
 
 describe("body cap", () => {
@@ -243,6 +278,24 @@ describe("body cap", () => {
           "content-length": String(1_048_576 + 1),
         },
         body: "{}",
+      }),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(413);
+  });
+
+  test("oversize body with a spoofed small content-length is still capped", async () => {
+    // Content-Length lies; the cap must be enforced on the actual bytes.
+    const big = "x".repeat(1_048_576 + 16);
+    const res = await handleGatewayRequest(
+      authedReq("http://127.0.0.1/api/pulse/data", {
+        method: "POST",
+        headers: {
+          "content-type": "application/octet-stream",
+          "content-length": "2",
+        },
+        body: big,
       }),
       config,
       secrets,

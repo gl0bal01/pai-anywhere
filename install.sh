@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # pai-anywhere install.sh — bootstrap a private PAI host on Ubuntu/Debian.
-# Usage:  curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.2.0/install.sh | bash
+# Usage:  curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.2.1/install.sh | bash
 # Docs:   docs/QUICKSTART.md
 # Threat model: docs/THREAT_MODEL.md
 set -eEuo pipefail
@@ -22,7 +22,7 @@ CFG_DIR="/etc/pai-anywhere"
 STATE_DIR="/var/lib/pai-anywhere"
 MANIFEST="${CFG_DIR}/install-manifest.jsonl"
 VERSION_FILE="${CFG_DIR}/VERSION"
-VERSION="0.2.0"
+VERSION="0.2.1"
 BUN_BIN="${PAI_HOME}/.bun/bin/bun"
 BUN_BASE_URL="https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}"
 
