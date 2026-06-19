@@ -16,7 +16,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # resetAccess() must invoke geteuid() before any of the state-mutating calls
 # (mkdirSync, writeFileSync, writeAtomic, spawnSync, randomBytes-into-file, etc).
 GUARD_OK="$(awk '
-  /^function resetAccess/ { in_fn = 1; next }
+  /^(export[[:space:]]+)?function resetAccess/ { in_fn = 1; next }
   in_fn && /^[[:space:]]*\/\// { next }
   in_fn && /geteuid/ { print "guard"; exit }
   in_fn && /(writeAtomic|writeFileSync|mkdirSync|renameSync|spawnSync)/ { exit }
