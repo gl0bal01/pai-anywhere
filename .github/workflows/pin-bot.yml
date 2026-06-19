@@ -15,7 +15,7 @@ jobs:
     name: Bump upstream installer hashes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Run pin-installer.sh
         run: bash scripts/pin-installer.sh
@@ -29,18 +29,32 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Fetch upstream installer diff for PR body
+      - name: Build PR body (with upstream preview baked in)
         id: upstream_diff
         if: steps.diff.outputs.changed == 'true'
         run: |
-          # Capture first 100 lines of current upstream installer for reviewer context
+          # Capture first 100 lines of the current upstream installer for context.
           upstream_preview="$(curl -fsSL https://ourpai.ai/install.sh | head -100 || echo 'Failed to fetch')"
-          # Write to a file to avoid multiline env var issues
-          printf '%s\n' "${upstream_preview}" > /tmp/upstream-preview.txt
+          # Build the FULL PR body here (shell DOES interpolate the preview) and
+          # pass it via body-path below. A literal `body:` block never expands
+          # $(...) — the preview would otherwise show up as the literal command.
+          {
+            printf '## Automated hash bump\n\n'
+            printf '`scripts/pin-installer.sh` detected a new upstream SHA-256.\n\n'
+            printf '**⚠️ REVIEWER ACTION REQUIRED:**\n'
+            printf '1. Read the upstream installer preview below before merging.\n'
+            printf '2. Verify the change is expected (routine update, not compromise).\n'
+            printf '3. A second reviewer is required for `pin-bot`-labeled PRs (branch protection).\n\n'
+            printf '<details>\n<summary>Upstream installer preview (first 100 lines)</summary>\n\n'
+            printf '```bash\n'
+            printf '%s\n' "${upstream_preview}"
+            printf '```\n\n</details>\n\n---\n'
+            printf '🤖 Opened by pin-bot workflow. Do **not** merge without reading the diff.\n'
+          } > /tmp/pr-body.md
 
       - name: Open PR on hash change
         if: steps.diff.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@22a9089034f40e5a961c8808d113e2c98fb63676 # v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           commit-message: 'pin: bump upstream installer hash'
@@ -48,24 +62,4 @@ jobs:
           delete-branch: true
           title: 'pin: bump upstream PAI installer + Bun hashes'
           labels: pin-bot
-          body: |
-            ## Automated hash bump
-
-            `scripts/pin-installer.sh` detected a new upstream SHA-256.
-
-            **⚠️ REVIEWER ACTION REQUIRED:**
-            1. Read the upstream installer diff below before merging.
-            2. Verify the change is expected (routine update, not compromise).
-            3. A second reviewer is required for `pin-bot`-labeled PRs (configure in branch protection).
-
-            <details>
-            <summary>Upstream installer preview (first 100 lines)</summary>
-
-            ```bash
-            $(cat /tmp/upstream-preview.txt 2>/dev/null || echo 'Not available')
-            ```
-
-            </details>
-
-            ---
-            🤖 Opened by pin-bot workflow. Do **not** merge without reading the diff.
+          body-path: /tmp/pr-body.md

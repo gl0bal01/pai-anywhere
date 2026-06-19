@@ -44,6 +44,21 @@ find "$BACKUP_DIR" -name 'pai-*.tar.age' -mtime "+${RETENTION_DAYS}" -delete
 # Off-site push (opt-in)
 OFFSITE_STATUS="skipped"
 if [[ -f "$OFFSITE_ENV" ]]; then
+  # This file is sourced as root, so it is a code-execution surface. Refuse it
+  # unless it is a root-owned, non-symlink regular file with no group/other
+  # access (mode 0600/0400) — otherwise a permissions slip means root RCE.
+  if [[ -L "$OFFSITE_ENV" ]]; then
+    echo "ERROR: $OFFSITE_ENV is a symlink — refusing to source." >&2; exit 1
+  fi
+  _own="$(stat -c '%u' "$OFFSITE_ENV" 2>/dev/null || echo -1)"
+  _mode="$(stat -c '%a' "$OFFSITE_ENV" 2>/dev/null || echo 777)"
+  if [[ "$_own" != "0" ]]; then
+    echo "ERROR: $OFFSITE_ENV must be owned by root (uid 0); got uid ${_own}." >&2; exit 1
+  fi
+  case "$_mode" in
+    600|400) ;;
+    *) echo "ERROR: $OFFSITE_ENV must be mode 0600 or 0400 (no group/other access); got ${_mode}." >&2; exit 1 ;;
+  esac
   # shellcheck disable=SC1090
   source "$OFFSITE_ENV"
   if [[ -n "${REMOTE:-}" ]]; then
