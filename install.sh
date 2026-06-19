@@ -30,6 +30,13 @@ VERSION="0.2.1"
 BUN_BIN="${PAI_HOME}/.bun/bin/bun"
 BUN_BASE_URL="https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}"
 
+# Self-bootstrap source — used only when install.sh runs standalone (the
+# advertised `curl … | sudo bash` streams just this file, with no sibling src/).
+PAI_ANYWHERE_REPO_URL="${PAI_ANYWHERE_REPO_URL:-https://github.com/gl0bal01/pai-anywhere.git}"
+PAI_ANYWHERE_BUNDLE_REF="${PAI_ANYWHERE_BUNDLE_REF:-v${VERSION}}"
+BUNDLE_DIR=""   # resolved by ensure_release_bundle (local checkout or temp clone)
+BUNDLE_TMP=""   # set only when we created a temp clone (removed on exit)
+
 # ── colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BOLD='\033[1m'; NC='\033[0m'
 info()  { printf "${GREEN}[info]${NC} %s\n" "$*"; }
@@ -80,15 +87,21 @@ _err_trap() {
     exit 1
   fi
   error "Install failed at line ${failed_line}. Running rollback via uninstall.sh --rollback …"
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  if [[ -x "${script_dir}/uninstall.sh" ]]; then
-    "${script_dir}/uninstall.sh" --rollback || true
+  local uninstall="" script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo '')"
+  # Prefer the bootstrapped bundle's uninstall.sh — in a standalone paste install
+  # the running script has no sibling uninstall.sh.
+  if [[ -n "${BUNDLE_DIR}" && -x "${BUNDLE_DIR}/uninstall.sh" ]]; then
+    uninstall="${BUNDLE_DIR}/uninstall.sh"
+  elif [[ -n "${script_dir}" && -x "${script_dir}/uninstall.sh" ]]; then
+    uninstall="${script_dir}/uninstall.sh"
   fi
+  [[ -n "${uninstall}" ]] && "${uninstall}" --rollback || true
   exit 1
 }
 
 _exit_trap() {
+  [[ -n "${BUNDLE_TMP}" && -d "${BUNDLE_TMP}" ]] && rm -rf "${BUNDLE_TMP}"
   if [[ -f "${STATE_DIR}/pairing-code.txt" ]]; then
     warn "Reminder: run 'pai-anywhere reset-access' if your terminal scrollback was captured."
   fi
@@ -400,10 +413,46 @@ pai_post_bootstrap_fixes() {
   phase_ok "pai-fixes"
 }
 
+ensure_release_bundle() {
+  # Resolve the directory that holds the gateway sources (src/, package.json).
+  # Full checkout → use it directly. Standalone `curl … | sudo bash` paste
+  # install (only install.sh streamed; no src/) → clone the tagged release over
+  # HTTPS into a temp dir and install from there. Integrity rests on TLS to
+  # GitHub plus the release tag — the same trust as fetching install.sh itself.
+  phase "bundle"
+  local self_dir
+  self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo '')"
+  if [[ -n "${self_dir}" && -f "${self_dir}/src/cli.ts" && -f "${self_dir}/package.json" ]]; then
+    BUNDLE_DIR="${self_dir}"
+    info "Installing from local checkout: ${BUNDLE_DIR}"
+    phase_ok "bundle"
+    return 0
+  fi
+  command -v git >/dev/null 2>&1 || { error "git is required to bootstrap the gateway bundle."; exit 1; }
+  BUNDLE_TMP="$(mktemp -d /tmp/pai-anywhere-bundle.XXXXXX)"
+  BUNDLE_DIR="${BUNDLE_TMP}"
+  info "Standalone install — fetching pai-anywhere ${PAI_ANYWHERE_BUNDLE_REF} from ${PAI_ANYWHERE_REPO_URL} …"
+  if ! git clone --depth 1 --branch "${PAI_ANYWHERE_BUNDLE_REF}" \
+        "${PAI_ANYWHERE_REPO_URL}" "${BUNDLE_DIR}" >/dev/null 2>&1; then
+    error "Failed to clone ${PAI_ANYWHERE_REPO_URL} at ${PAI_ANYWHERE_BUNDLE_REF}."
+    error "Check network connectivity and that the release tag exists."
+    exit 1
+  fi
+  if [[ ! -f "${BUNDLE_DIR}/src/cli.ts" || ! -f "${BUNDLE_DIR}/package.json" ]]; then
+    error "Bootstrapped bundle at ${BUNDLE_DIR} is missing gateway sources — aborting."
+    exit 1
+  fi
+  info "Release bundle ready: ${BUNDLE_DIR}"
+  phase_ok "bundle"
+}
+
 install_gateway_app() {
   phase "gateway-app"
-  local src_dir
-  src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local src_dir="${BUNDLE_DIR}"
+  if [[ -z "${src_dir}" || ! -f "${src_dir}/src/cli.ts" ]]; then
+    error "Gateway bundle not resolved — ensure_release_bundle must run first."
+    exit 1
+  fi
 
   if [[ "${src_dir}" == "${APP_DIR}" ]]; then
     info "Already running from ${APP_DIR}; skipping rsync."
@@ -743,6 +792,7 @@ main() {
   fi
   preflight
   install_apt_deps
+  ensure_release_bundle
   install_tailscale_apt
   create_pai_user
   install_bun_for_pai
