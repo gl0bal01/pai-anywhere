@@ -142,16 +142,16 @@ For write access (pai modifies your code): use `rwX` instead of `rX`. Don't gran
 Use Tailscale's iOS/Android app — it has built-in SSH. Tap host → SSH → user `pai`.
 
 **Q: I want a browser terminal.**
-v0.1 doesn't ship one (`/terminal` returns 410). Deferred to v0.2 because secure browser-PTY is non-trivial. Tailscale SSH handles 95% of cases.
+Not shipped yet (`/terminal` returns 410) — secure browser-PTY is non-trivial, so it's deferred to a later release. Tailscale SSH handles 95% of cases.
 
 **Q: Can I install on Fedora/Arch?**
-Not yet. Ubuntu 22.04+ / Debian 12+ only in v0.1. Fedora/Arch in v0.3.
+Not yet — Ubuntu 22.04+ / Debian 12+ only. Fedora/Arch are planned.
 
 **Q: Voice / Telegram?**
 Optional, opt-in. Set env vars in `/home/pai/.claude/PAI/USER/Config/` after install. See upstream PAI docs.
 
 **Q: Can multiple users share one VPS?**
-v0.1 = single-tenant per Personal Use Boundary. Multi-tenant is out of scope (different threat model).
+Single-tenant by design (Personal Use Boundary). Multi-tenant is out of scope — a different threat model.
 
 **Q: What if upstream PAI updates?**
 Re-run the installer. SHA-256 pin gets bumped via `pin-bot` weekly. Manifest tracks all changes for clean rollback.
@@ -161,7 +161,7 @@ Optional opt-in: see [`extras/backup/`](./extras/backup/) for an age-encrypted d
 
 ---
 
-## What ships in v0.1
+## What ships today
 
 ✅ Paste-install on Ubuntu 22.04+ / Debian 12+
 ✅ SSH alias generator for client devices
@@ -171,8 +171,8 @@ Optional opt-in: see [`extras/backup/`](./extras/backup/) for an age-encrypted d
 ✅ Manifest-recorded, fully reversible install
 ✅ Read-only `doctor` self-check
 
-❌ Browser terminal (v0.2)
-❌ Fedora / Arch (v0.3)
+❌ Browser terminal (deferred)
+❌ Fedora / Arch (planned)
 ❌ Multi-tenant
 ❌ Public Pulse / Funnel (forbidden by design)
 
