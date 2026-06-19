@@ -3,7 +3,7 @@
 > Companion repo for Daniel Miessler's [Personal AI Infrastructure (PAI)](https://github.com/danielmiessler/Personal_AI_Infrastructure).
 > Takes a fresh Linux VPS to a private, hardened, multi-device PAI host with a kid-simple setup path.
 
-**Phase:** v0.1 hybrid bash + slim TS. Release gated on `docs/VPS_TEST_RESULTS.md` matrix evidence (Hetzner CX22 Ubuntu 22.04/24.04, DigitalOcean Debian 12) + mobile pairing flow. Browser terminal bridge deferred to v0.2. This file is the build-time briefing.
+**Phase:** v0.2.2 (hybrid bash + slim TS). Release gated on `docs/VPS_TEST_RESULTS.md` matrix evidence (Hetzner CX22 Ubuntu 22.04/24.04, DigitalOcean Debian 12) + mobile pairing flow. Browser terminal bridge deferred to a later release. This file is the build-time briefing.
 
 ---
 
@@ -50,7 +50,7 @@ The default user experience is:
   - PAI's managed profile is `/home/pai/.claude`.
 - Optional Telegram text notifications for mobile.
 - Migration verifier for the Discussion #617 "vanilla claude post-migration" trap.
-- Read-only `doctor`, manifest-recorded changes, rollback, reset-access, uninstall. (`install --dry-run` deferred to v0.3; v0.1 installer is idempotent bash with explicit phases.)
+- Read-only `doctor`, manifest-recorded changes, rollback, reset-access, uninstall. (`install --dry-run` deferred to a later release; the installer is idempotent bash with explicit phases.)
 - Hardening checklist and threat model.
 - OMC + oh-my-openagent coexistence notes for advanced non-isolated installs.
 - Runtime adapter boundary for future OpenCode/OpenAgent support.
@@ -270,7 +270,7 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 
 ---
 
-## v0.1 Implementation Notes
+## Implementation Notes
 
 - `install.sh` (bash, ~448 stripped LOC) is the user-facing entrypoint. Paste-installs on fresh Ubuntu/Debian VPS. Idempotent functions: preflight, install_apt_deps, install_tailscale_apt (signed apt repo, never `curl|sh`), create_pai_user, install_bun_for_pai (SHA-256 verified), fetch_and_verify_pai (SHA-256 verified, abort on mismatch), run_pai_as_pai, install_gateway_app, generate_secrets (20-char base64url pairing code, 0600), write_systemd_units, tailscale_up_if_needed, tailscale_serve_private (refuses Funnel), verify, print_done.
 - `uninstall.sh` reads `/etc/pai-anywhere/install-manifest.jsonl` (intent-log JSONL written by `install.sh`'s `record()` helper) and reverses only manifest-recorded paths. ENOENT = skip. EACCES/symlink/owner-mismatch = abort. Unowned files inside target dirs are preserved.
