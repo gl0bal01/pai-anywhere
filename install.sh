@@ -11,6 +11,10 @@ PAI_INSTALLER_SHA256="62814f512f461e684efc88d5ccdd7458fce45021bc55d7ad7f0d6eb974
 BUN_VERSION="1.3.13"
 BUN_SHA256_X86_64="79c0771fa8b92c33aae41e15a0e0d307ea99d0e2f00317c71c6c53237a78e25a"
 BUN_SHA256_ARM64="70bae41b3908b0a120e1e58c5c8af30e74afae3b8d11b0d3fdd8e787ddfb4b22"
+# Claude Code CLI — pinned for supply-chain integrity (bump deliberately / via pin-bot).
+CLAUDE_CODE_VERSION="2.1.183"
+# Tailscale apt signing key — fingerprint pinned, verified after fetch (MITM defense).
+TAILSCALE_KEY_FINGERPRINT="2596A99EAAB33821893C0A79458CA832957F5868"
 
 # ── runtime config ────────────────────────────────────────────────────────────
 GATEWAY_PORT="${PAI_ANYWHERE_GATEWAY_PORT:-8787}"
@@ -70,7 +74,12 @@ url_safe_b64() {
 
 # ── trap: ERR → rollback, EXIT → pairing-code reminder ───────────────────────
 _err_trap() {
-  error "Install failed at line ${BASH_LINENO[0]}. Running rollback via uninstall.sh …"
+  local failed_line="${BASH_LINENO[0]}"
+  if [[ "${PAI_ANYWHERE_NO_ROLLBACK:-0}" == "1" ]]; then
+    error "Install failed at line ${failed_line}. PAI_ANYWHERE_NO_ROLLBACK=1 set — leaving state for inspection."
+    exit 1
+  fi
+  error "Install failed at line ${failed_line}. Running rollback via uninstall.sh --rollback …"
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [[ -x "${script_dir}/uninstall.sh" ]]; then
@@ -123,7 +132,7 @@ preflight() {
   # Already installed at same version — idempotent skip
   if [[ -f "${VERSION_FILE}" ]]; then
     local installed_ver
-    installed_ver="$(cat "${VERSION_FILE}")"
+    installed_ver="$(tr -d '[:space:]' < "${VERSION_FILE}")"
     if [[ "${installed_ver}" == "${VERSION}" ]]; then
       info "pai-anywhere ${VERSION} already installed. Re-running is safe (idempotent)."
     fi
@@ -135,7 +144,7 @@ preflight() {
 
 install_apt_deps() {
   phase "apt-deps"
-  local pkgs=(curl ca-certificates gnupg fail2ban ufw git rsync jq unzip)
+  local pkgs=(curl ca-certificates gnupg openssl fail2ban ufw git rsync jq unzip)
   local missing=()
   for pkg in "${pkgs[@]}"; do
     if ! dpkg-query -W -f='${Status}' "${pkg}" 2>/dev/null | grep -q "install ok installed"; then
@@ -166,9 +175,26 @@ install_tailscale_apt() {
   local keyring="/usr/share/keyrings/tailscale-archive-keyring.gpg"
   if [[ ! -f "${keyring}" ]]; then
     record "file" "${keyring}" "create"
-    curl -fsSL "https://pkgs.tailscale.com/stable/$(. /etc/os-release; echo "${ID}")/$(. /etc/os-release; echo "${VERSION_CODENAME}").gpg" \
-      | gpg --dearmor -o "${keyring}"
-    chmod 644 "${keyring}"
+    local os_id_k os_codename_k key_tmp got_fpr
+    os_id_k="$(. /etc/os-release; echo "${ID}")"
+    os_codename_k="$(. /etc/os-release; echo "${VERSION_CODENAME}")"
+    key_tmp="$(mktemp)"
+    # shellcheck disable=SC2064
+    trap "rm -f '${key_tmp}'" RETURN
+    # --batch --yes so dearmor never blocks on a prompt under set -e.
+    curl -fsSL "https://pkgs.tailscale.com/stable/${os_id_k}/${os_codename_k}.gpg" \
+      | gpg --batch --yes --dearmor -o "${key_tmp}"
+    # MITM defense: the key is fetched over TLS but unpinned upstream; verify the
+    # signing-key fingerprint against the pinned value before trusting it.
+    got_fpr="$(gpg --show-keys --with-colons "${key_tmp}" 2>/dev/null | awk -F: '/^fpr:/{print $10; exit}')"
+    if [[ "${got_fpr}" != "${TAILSCALE_KEY_FINGERPRINT}" ]]; then
+      error "Tailscale signing-key fingerprint mismatch — refusing to trust apt repo."
+      error "  expected: ${TAILSCALE_KEY_FINGERPRINT}"
+      error "  actual:   ${got_fpr:-<none>}"
+      exit 1
+    fi
+    install -m 644 "${key_tmp}" "${keyring}"
+    info "Tailscale signing key verified (fpr ${TAILSCALE_KEY_FINGERPRINT})."
   fi
 
   local sources_file="/etc/apt/sources.list.d/tailscale.list"
@@ -330,9 +356,11 @@ pai_post_bootstrap_fixes() {
   # These cause Pulse's file watcher to crash with ELOOP. Remove them.
   local broken_count=0
   while IFS= read -r -d '' link; do
-    local target
+    local target resolved
     target="$(readlink "${link}" 2>/dev/null || echo '')"
-    if [[ "${link}" == "${target}" ]] || ! [[ -e "${link}" ]]; then
+    resolved="$(readlink -f "${link}" 2>/dev/null || echo '')"
+    # Catch self-references (absolute OR relative target) and broken/ELOOP links.
+    if [[ "${link}" == "${target}" ]] || [[ "${link}" == "${resolved}" ]] || ! [[ -e "${link}" ]]; then
       rm -f "${link}"
       record "file" "${link}" "remove"
       broken_count=$((broken_count + 1))
@@ -345,9 +373,9 @@ pai_post_bootstrap_fixes() {
   # Upstream PAI installer prints "Claude Code not found — will install during
   # setup" but never actually runs the install. Install it for the pai user.
   if ! runuser -u "${PAI_USER}" -- bash -lc 'command -v claude' &>/dev/null; then
-    info "Installing Claude Code CLI for ${PAI_USER} (upstream installer skipped this) …"
+    info "Installing Claude Code CLI ${CLAUDE_CODE_VERSION} for ${PAI_USER} (upstream installer skipped this) …"
     runuser -u "${PAI_USER}" -- bash -lc \
-      "export PATH=${PAI_HOME}/.bun/bin:\$PATH; bun add -g @anthropic-ai/claude-code"
+      "export PATH=${PAI_HOME}/.bun/bin:\$PATH; bun add -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
     record "file" "${PAI_HOME}/.bun/bin/claude" "create"
   else
     info "Claude Code CLI already installed for ${PAI_USER}."
@@ -385,6 +413,8 @@ install_gateway_app() {
 
   record "file" "${APP_DIR}" "create"
   mkdir -p "${APP_DIR}"
+  # APP_DIR is an installer-owned bundle: --delete makes reinstall authoritative.
+  # Do not hand-edit files under ${APP_DIR}; a reinstall replaces them wholesale.
   rsync -a --delete --no-owner --no-group \
     --exclude='.git' \
     --exclude='node_modules' \
@@ -404,7 +434,10 @@ install_gateway_app() {
     export HOME='${PAI_HOME}'
     export PATH='${PAI_HOME}/.bun/bin:\$PATH'
     cd '${APP_DIR}'
-    bun install --frozen-lockfile --production 2>/dev/null || bun install --production
+    bun install --frozen-lockfile --production || {
+      echo '[warn] frozen-lockfile install failed — lockfile may be out of sync; retrying unpinned' >&2
+      bun install --production
+    }
   "
   info "Gateway app installed to ${APP_DIR}."
   phase_ok "gateway-app"
@@ -459,6 +492,14 @@ generate_secrets() {
 
 write_systemd_units() {
   phase "systemd"
+  # The Pulse unit hard-codes WorkingDirectory + `bun run pulse.ts`. Verify the
+  # upstream entrypoint exists before writing a unit that would only crash-loop.
+  local pulse_entry="${PAI_HOME}/.claude/PAI/PULSE/pulse.ts"
+  if [[ ! -f "${pulse_entry}" ]]; then
+    error "Pulse entrypoint not found at ${pulse_entry}."
+    error "Upstream PAI layout may have changed; refusing to write a broken pai-pulse.service."
+    exit 1
+  fi
   local svc_gateway="/etc/systemd/system/pai-anywhere.service"
   local svc_pulse="/etc/systemd/system/pai-pulse.service"
 
@@ -547,8 +588,16 @@ tailscale_up_if_needed() {
   fi
   info "Starting Tailscale …"
   systemctl enable --now tailscaled
-  # Interactive: print auth link and wait for login
-  tailscale up --advertise-exit-node=false 2>&1 | tee /tmp/tailscale-up.log || true
+  # Interactive login: tailscale prints a one-time auth URL to this terminal.
+  # Do NOT tee it to /tmp — the auth URL is sensitive and /tmp is world-readable.
+  # Capture the real exit code instead of swallowing it through a pipe (|| true).
+  set +e
+  tailscale up --advertise-exit-node=false
+  local up_rc=$?
+  set -e
+  if [[ "${up_rc}" -ne 0 ]]; then
+    warn "tailscale up exited ${up_rc} (expected if browser login is still pending)."
+  fi
   # Wait up to 120 seconds for Running state
   local i=0
   while [[ "${i}" -lt 24 ]]; do
@@ -642,7 +691,14 @@ print_done() {
   printf '%b\n' "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   printf '\n'
   printf '  Private URL:   https://%s\n' "${tailnet_url}"
-  printf '  Pairing code:  %s\n' "${pairing}"
+  # Only print the raw pairing code to an interactive terminal. In piped/captured
+  # output (curl | bash, tee, CI logs) emit a pointer to the 0600 file instead.
+  if [[ -t 1 ]]; then
+    printf '  Pairing code:  %s\n' "${pairing}"
+  else
+    printf '  Pairing code:  (hidden — non-interactive output)\n'
+    printf '  Retrieve on server: sudo cat %s\n' "${STATE_DIR}/pairing-code.txt"
+  fi
   printf '\n'
   printf '  Open the URL from any device on your Tailnet,\n'
   printf '  then enter the pairing code when prompted.\n'
@@ -676,6 +732,15 @@ print_done() {
 # main
 # ═══════════════════════════════════════════════════════════════════════════════
 main() {
+  # Single-flight lock: prevent concurrent installs racing on secrets/manifest.
+  if [[ "${EUID}" -eq 0 ]]; then
+    mkdir -p "${CFG_DIR}" 2>/dev/null || true
+    exec 9>"${CFG_DIR}/.install.lock"
+    if ! flock -n 9; then
+      error "Another pai-anywhere install is already running (${CFG_DIR}/.install.lock)."
+      exit 1
+    fi
+  fi
   preflight
   install_apt_deps
   install_tailscale_apt
@@ -689,6 +754,9 @@ main() {
   write_systemd_units
   tailscale_up_if_needed
   tailscale_serve_private
+  # A doctor/verify failure must not tear down an otherwise-complete install.
+  # Disable the ERR→rollback trap for the verification + finalization phases.
+  trap - ERR
   verify_install
   write_version_file
   print_done

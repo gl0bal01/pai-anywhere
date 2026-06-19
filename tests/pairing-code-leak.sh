@@ -3,9 +3,9 @@
 #
 # generate_secrets() writes the code to /var/lib/pai-anywhere/pairing-code.txt
 # (mode 0600) and emits only "Pairing code generated." to the log — never the
-# raw value. The final print_done() banner displays it with a clear-screen so
-# users are prompted to record it; the EXIT trap reminds them to run reset-access
-# if scrollback was captured.
+# raw value. The final print_done() banner displays the raw code ONLY to an
+# interactive terminal ([[ -t 1 ]]); piped/captured output gets a pointer to the
+# 0600 file. The EXIT trap reminds users to run reset-access if scrollback leaked.
 #
 # This test verifies the generation phase does not leak the value.
 # Usage: bash tests/pairing-code-leak.sh
@@ -37,6 +37,27 @@ if ! printf '%s\n' "${GENERATE_BODY}" | grep -q 'chmod 0600.*pairing'; then
 fi
 printf '[pass] generate_secrets() sets mode 0600 on pairing-code.txt\n'
 
+# ── Part 1b: source-level tty-gating + no /tmp log (A2 / A3) ───────────────────
+# A3: the Tailscale auth URL must never be tee'd to a world-readable /tmp file.
+if grep -qE 'tee[[:space:]]+/tmp/tailscale-up\.log' "${REPO_ROOT}/install.sh"; then
+  printf '[FAIL] install.sh tees the tailscale auth URL to world-readable /tmp\n' >&2
+  exit 1
+fi
+printf '[pass] install.sh does not persist the tailscale auth URL to /tmp\n'
+
+# A2: print_done() must gate the raw pairing code on an interactive terminal.
+PRINTDONE_BODY="$(awk '/^print_done\(\)/{found=1} found{print} found && /^}$/{exit}' \
+  "${REPO_ROOT}/install.sh")"
+if ! printf '%s\n' "${PRINTDONE_BODY}" | grep -q '\-t 1'; then
+  printf '[FAIL] print_done() does not tty-gate the pairing-code display\n' >&2
+  exit 1
+fi
+if ! printf '%s\n' "${PRINTDONE_BODY}" | grep -q 'hidden'; then
+  printf '[FAIL] print_done() has no non-interactive pairing-code fallback\n' >&2
+  exit 1
+fi
+printf '[pass] print_done() shows the raw pairing code only to an interactive tty\n'
+
 # ── Part 2: runtime check (root, CI container) ────────────────────────────────
 if [[ "${EUID}" -ne 0 ]]; then
   printf '[skip] runtime pairing-code-leak check requires root — skipping\n' >&2
@@ -65,15 +86,14 @@ if [[ "${PERMS}" != "600" ]]; then
 fi
 printf '[pass] pairing-code.txt exists with mode 600\n'
 
-# The raw pairing code value must NOT appear in the installation-phase log lines.
-# (print_done output is excluded by stopping capture before the interactive read.)
+# The raw pairing code value must NOT appear ANYWHERE in captured (non-tty)
+# output. Output here is redirected to a file, so print_done()'s tty-gate
+# suppresses the raw code entirely — no banner exclusion is needed any more.
 PAIRING_VALUE="$(cat "${PAIRING_FILE}")"
 # Strip ANSI escape codes before grepping
 STRIPPED_LOG="$(sed 's/\x1b\[[0-9;]*m//g' "${LOG_FILE}")"
-if printf '%s\n' "${STRIPPED_LOG}" \
-    | grep -v 'Pairing code:' \
-    | grep -qF "${PAIRING_VALUE}"; then
-  printf '[FAIL] pairing code value found in install log output\n' >&2
+if printf '%s\n' "${STRIPPED_LOG}" | grep -qF "${PAIRING_VALUE}"; then
+  printf '[FAIL] pairing code value found in captured install output\n' >&2
   exit 1
 fi
-printf '[pass] pairing code value not found in install log (outside final banner)\n'
+printf '[pass] pairing code value never appears in captured (non-tty) output\n'
