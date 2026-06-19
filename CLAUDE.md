@@ -257,7 +257,7 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 
 ---
 
-## Sibling Repos In `/home/dev/projects/pai-projet/`
+## Related PAI-Ecosystem Repos
 
 | Repo | Role |
 |---|---|
@@ -314,9 +314,9 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 
 - [docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md) — V1 threat model
 - Upstream PAI public installer: `https://ourpai.ai/install.sh`
-- Upstream PAI bundled installer: `../Personal_AI_Infrastructure/Releases/v5.0.0/.claude/install.sh`
-- Upstream Pulse: `../Personal_AI_Infrastructure/Releases/v5.0.0/.claude/PAI/PULSE/`
-- Upstream containment manifest: `../Personal_AI_Infrastructure/.pai-protected.json`
+- Upstream PAI bundled installer: `Personal_AI_Infrastructure/Releases/v5.0.0/.claude/install.sh` (canonical PAI repo)
+- Upstream Pulse: `Personal_AI_Infrastructure/Releases/v5.0.0/.claude/PAI/PULSE/`
+- Upstream containment manifest: `Personal_AI_Infrastructure/.pai-protected.json`
 - [Discussion #617 — Mirror PAI to another server](https://github.com/danielmiessler/Personal_AI_Infrastructure/discussions/617)
 - [Discussion #922 — Install pain](https://github.com/danielmiessler/Personal_AI_Infrastructure/discussions/922)
 - [Issue #25746 — Tailscale/IPN feature request, claude-code](https://github.com/anthropics/claude-code/issues/25746)
