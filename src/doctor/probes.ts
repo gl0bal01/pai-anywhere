@@ -166,6 +166,9 @@ function pulseLoopback(listeners: string[]): PostInstallProbe {
 }
 
 async function pulseHealth(): Promise<PostInstallProbe> {
+  // (T22) Probe both health paths by design: different Pulse versions expose the
+  // endpoint at either /healthz or /api/pulse/health, so a pass on either is a
+  // healthy Pulse. This is intentional, not redundant.
   for (const url of [`${PULSE_URL}/healthz`, `${PULSE_URL}/api/pulse/health`]) {
     const r = await fetchStatus(url, 1_500);
     if (r.ok) return p("pulse.health", "Pulse health endpoint", "pass", "Pulse health endpoint responded", { url, status: r.status });
@@ -188,6 +191,13 @@ async function gatewayAuthGate(): Promise<PostInstallProbe> {
   if (!health.ok)
     return p("gateway.auth_gate", "Gateway authentication gate", "fail", "Gateway health endpoint did not respond", { url: GATEWAY_URL });
   const prot = await fetchStatus(`${GATEWAY_URL}/pulse`, 1_500);
+  // (T21) A transport error (timeout / connection refused) means we got NO status
+  // back — a slow Pulse upstream must not be reported as an auth-gate failure.
+  // Treat it as "warn"/unknown; only a real non-401 HTTP status is a true fail.
+  if (prot.transportError)
+    return p("gateway.auth_gate", "Gateway authentication gate", "warn",
+      "Could not determine the auth gate; /pulse did not respond in time (slow upstream?)",
+      { url: GATEWAY_URL });
   const ok = prot.status === 401;
   return p("gateway.auth_gate", "Gateway authentication gate", ok ? "pass" : "fail",
     ok ? "Gateway blocks unauthenticated requests" : "Gateway did not block an unauthenticated request",
@@ -229,12 +239,16 @@ function p(
   return { id, title, status, summary, ...(details && Object.keys(details).length > 0 ? { details } : {}) };
 }
 
-async function fetchStatus(url: string, ms: number): Promise<{ ok: boolean; status?: number }> {
+async function fetchStatus(url: string, ms: number): Promise<{ ok: boolean; status?: number; transportError?: boolean }> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
     const res = await fetch(url, { signal: ctrl.signal });
     return { ok: res.ok, status: res.status };
-  } catch { return { ok: false }; }
+  } catch {
+    // No HTTP response at all (timeout/abort, connection refused, DNS). The
+    // caller must not treat this the same as a real non-expected status code.
+    return { ok: false, transportError: true };
+  }
   finally { clearTimeout(t); }
 }

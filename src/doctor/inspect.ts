@@ -71,6 +71,9 @@ function checkUser(u: { username: string; uid: number | null }): DoctorCheck {
 
 function checkDeps(): DoctorCheck[] {
   return DEPS.map(({ id, title, cmd }) => {
+    // (T17) Bun is detected via process.versions.bun first (true when doctor runs
+    // under Bun), with cmdExists("bun") as the PATH fallback for other runtimes.
+    // This dual check is intentional and already correct.
     const found = cmd === "bun" ? (!!process.versions.bun || cmdExists(cmd)) : cmdExists(cmd);
     return { id, title: `${title} dependency`,
       status: found ? "pass" : "warn",

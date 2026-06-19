@@ -9,7 +9,7 @@ import {
   createSessionCookie,
   loadOrCreateGatewaySecrets,
 } from "./auth";
-import { gatewayConfigFromArgs, handleGatewayRequest } from "./server";
+import { assertLoopbackPulseOrigin, gatewayConfigFromArgs, handleGatewayRequest, startGateway } from "./server";
 import type { GatewayConfig, GatewaySecrets } from "./types";
 
 let tmpDir: string;
@@ -317,5 +317,107 @@ describe("gatewayConfigFromArgs", () => {
         process.env.PAI_ANYWHERE_PAIRING_CODE = saved;
       }
     }
+  });
+});
+
+// ── T1: pulseOrigin SSRF validation (assertLoopbackPulseOrigin) ───────────────
+
+describe("pulseOrigin loopback validation (SSRF)", () => {
+  test("accepts a plain loopback http origin", () => {
+    expect(() => assertLoopbackPulseOrigin("http://127.0.0.1:31337")).not.toThrow();
+  });
+
+  test("accepts the 127.0.0.0/8 block (not just 127.0.0.1)", () => {
+    expect(() => assertLoopbackPulseOrigin("http://127.0.0.2:31337")).not.toThrow();
+  });
+
+  test("accepts ::1 and localhost", () => {
+    expect(() => assertLoopbackPulseOrigin("http://[::1]:31337")).not.toThrow();
+    expect(() => assertLoopbackPulseOrigin("http://localhost:31337")).not.toThrow();
+  });
+
+  test("rejects a remote host", () => {
+    expect(() => assertLoopbackPulseOrigin("http://169.254.169.254/latest/meta-data"))
+      .toThrow(/must be loopback/);
+  });
+
+  test("rejects userinfo (http://user:pass@127.0.0.1)", () => {
+    expect(() => assertLoopbackPulseOrigin("http://user:pass@127.0.0.1:31337"))
+      .toThrow(/must not contain a username or password/);
+  });
+
+  test("rejects https / non-http schemes", () => {
+    expect(() => assertLoopbackPulseOrigin("https://127.0.0.1:31337")).toThrow(/must use http:/);
+    expect(() => assertLoopbackPulseOrigin("ftp://127.0.0.1")).toThrow(/must use http:/);
+  });
+
+  test("rejects a protocol-relative origin (not a parseable URL)", () => {
+    expect(() => assertLoopbackPulseOrigin("//127.0.0.1:31337")).toThrow(/not a URL/);
+  });
+
+  test("startGateway refuses to start with a remote pulseOrigin", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pai-pulseorigin-test-"));
+    // Resolve a real free port so port validation passes and we genuinely reach
+    // (and trip) the pulseOrigin guard rather than failing on the port check.
+    const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+    const freePort = probe.port!;
+    probe.stop();
+    try {
+      expect(() => startGateway({
+        ...config,
+        port: freePort,
+        stateDir: dir,
+        pulseOrigin: "http://evil.example/",
+      })).toThrow(/host must be loopback/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── T11: pairing-code length is exactly 20 ────────────────────────────────────
+
+describe("pairing code length validation", () => {
+  test("startGateway rejects a 12-char code the old loose regex would have allowed", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pai-paircode-test-"));
+    try {
+      expect(() => startGateway({
+        ...config,
+        stateDir: dir,
+        pairingCode: "abcdefghijkl", // 12 chars: valid under old {12,32}, invalid under {20}
+      })).toThrow(/exactly 20 base64url characters/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── T3 / T19: Server header rewrite + HSTS ────────────────────────────────────
+
+describe("response security headers", () => {
+  test("local JSON response advertises a static Server, never a Bun version", async () => {
+    const res = await handleGatewayRequest(
+      new Request("http://127.0.0.1/__gateway/healthz"),
+      config,
+      secrets,
+    );
+    expect(res.headers.get("server")).toBe("pai-anywhere");
+    expect(res.headers.get("server") || "").not.toContain("Bun");
+  });
+
+  test("proxied Pulse response does not leak a Bun Server header", async () => {
+    const res = await handleGatewayRequest(authedReq("http://127.0.0.1/agents"), config, secrets);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("server")).toBe("pai-anywhere");
+    expect(res.headers.get("server") || "").not.toContain("Bun");
+  });
+
+  test("local response carries HSTS (T19)", async () => {
+    const res = await handleGatewayRequest(
+      new Request("http://127.0.0.1/__gateway/healthz"),
+      config,
+      secrets,
+    );
+    expect(res.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
   });
 });

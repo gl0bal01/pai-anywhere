@@ -1,13 +1,19 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
-export function run(cmd: string[], ms = 5_000): { code: number | null; out: string; err: string } {
+export function run(cmd: string[], ms = 10_000): { code: number | null; out: string; err: string } {
+  // (T8) Default 10s timeout: probes invoke tools (systemctl, tailscale, ufw)
+  // that can be slow on a loaded VPS; a 5s default produced spurious failures.
   const [bin, ...a] = cmd;
   if (!bin) return { code: null, out: "", err: "empty command" };
   const r = spawnSync(bin, a, { encoding: "utf8", timeout: ms, maxBuffer: 1024 * 1024 });
   return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
 }
 
+// (T4) `name` is interpolated into a shell command. This is only safe because
+// every caller passes a hardcoded string literal (e.g. "ss", "systemctl",
+// "tailscale"). Do NOT pass untrusted/user-controlled input here — there is no
+// general escaping beyond the single-quote wrap below.
 export function cmdExists(name: string): boolean {
   return spawnSync("sh", ["-lc", `command -v '${name.replaceAll("'", "'\\''")}' >/dev/null 2>&1`],
     { timeout: 2_000 }).status === 0;

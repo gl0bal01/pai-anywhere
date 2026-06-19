@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,9 +8,11 @@ import {
   canAttemptPairing,
   clearFailedPairing,
   createSessionCookie,
+  initRateLimiter,
   isAuthenticated,
   loadOrCreateGatewaySecrets,
   recordFailedPairing,
+  resetRateLimiterForTests,
 } from "./auth";
 import type { GatewayConfig, GatewaySecrets } from "./types";
 
@@ -160,5 +162,89 @@ describe("session cookie expiry", () => {
       headers: { cookie: `${SESSION_COOKIE}=${cookieValue}` },
     });
     expect(isAuthenticated(req, secrets)).toBe(true);
+  });
+});
+
+// ── T9: persistent rate-limit bucket (survives restart) ─────────────────────────
+
+describe("persistent rate-limit bucket", () => {
+  let rlDir: string;
+
+  beforeEach(() => {
+    rlDir = mkdtempSync(join(tmpdir(), "pai-ratelimit-test-"));
+  });
+
+  afterEach(() => {
+    // Detach persistence so these disk-backed tests can't leak into the
+    // in-memory-only suites above.
+    resetRateLimiterForTests();
+    try { rmSync(rlDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test("counter survives a simulated reload from the same state dir", () => {
+    // First "process": exhaust the 10-attempt window.
+    initRateLimiter(rlDir);
+    for (let i = 0; i < 10; i++) {
+      canAttemptPairing();
+      recordFailedPairing();
+    }
+    expect(canAttemptPairing()).toBe(false);
+    expect(existsSync(join(rlDir, "rate-limit.json"))).toBe(true);
+
+    // Simulate a gateway restart: drop in-memory state, then re-initialise from
+    // the SAME state dir (re-reads rate-limit.json).
+    resetRateLimiterForTests();
+    initRateLimiter(rlDir);
+
+    // Still limited — the attacker did not get a fresh window by restarting.
+    expect(canAttemptPairing()).toBe(false);
+  });
+
+  test("a corrupt rate-limit.json starts fresh instead of crashing", () => {
+    writeFileSync(join(rlDir, "rate-limit.json"), "{ this is not valid json", { mode: 0o600 });
+    // Must not throw, and must allow attempts (fresh window).
+    expect(() => initRateLimiter(rlDir)).not.toThrow();
+    expect(canAttemptPairing()).toBe(true);
+  });
+
+  test("persisted file is written with mode 0600", () => {
+    initRateLimiter(rlDir);
+    canAttemptPairing();
+    recordFailedPairing();
+    const mode = statSync(join(rlDir, "rate-limit.json")).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+});
+
+// ── T12: cookie must be exactly two dot-separated segments ───────────────────────
+
+describe("cookie segment validation", () => {
+  let secrets: GatewaySecrets;
+  const segDir = mkdtempSync(join(tmpdir(), "pai-cookie-seg-test-"));
+
+  beforeAll(() => {
+    secrets = loadOrCreateGatewaySecrets(segDir);
+  });
+
+  afterAll(() => {
+    try { rmSync(segDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  test("a 3-segment cookie (extra dot) is rejected", () => {
+    const config = makeConfig();
+    const header = createSessionCookie(config, secrets);
+    const cookieValue = header.split(";")[0]!.split("=").slice(1).join("=");
+    // Append a third segment; the old code took only the first two and accepted it.
+    const req = new Request("http://127.0.0.1/", {
+      headers: { cookie: `${SESSION_COOKIE}=${cookieValue}.extrasegment` },
+    });
+    expect(isAuthenticated(req, secrets)).toBe(false);
+  });
+
+  test("a single-segment cookie (no dot) is rejected", () => {
+    const req = new Request("http://127.0.0.1/", {
+      headers: { cookie: `${SESSION_COOKIE}=onlyonesegment` },
+    });
+    expect(isAuthenticated(req, secrets)).toBe(false);
   });
 });

@@ -4,6 +4,7 @@ import {
   clearFailedPairing,
   clearSessionCookie,
   createSessionCookie,
+  initRateLimiter,
   isAuthenticated,
   loadOrCreateGatewaySecrets,
   pairingCodeMatches,
@@ -56,10 +57,22 @@ export function startGateway(config: GatewayConfig): ReturnType<typeof Bun.serve
   if (!Number.isInteger(config.port) || config.port <= 0 || config.port > 65535) {
     throw new Error(`invalid gateway port: ${config.port}`);
   }
-  // Validate pairing code is base64url (20 chars; also accepts wider range for flexibility)
-  if (!/^[A-Za-z0-9_\-]{12,32}$/.test(config.pairingCode)) {
-    throw new Error("pairing code must be 12–32 base64url characters ([A-Za-z0-9_-])");
+  // Pairing codes are randomBytes(15).base64url → always exactly 20 chars.
+  // (T20) The code is drawn from a CSPRNG, so no weak-pattern/dictionary check is
+  // needed; rejecting anything but the exact length/alphabet is sufficient.
+  if (!/^[A-Za-z0-9_\-]{20}$/.test(config.pairingCode)) {
+    throw new Error("pairing code must be exactly 20 base64url characters ([A-Za-z0-9_-])");
   }
+  // Fail closed if the Pulse upstream is not a loopback http origin. The gateway
+  // proxies authenticated requests to pulseOrigin; an attacker who can influence
+  // PAI_ANYWHERE_PULSE_ORIGIN (or a misconfiguration) could otherwise turn the
+  // authenticated proxy into an SSRF primitive against an arbitrary host. Same
+  // fail-closed shape as the loopback bind check above.
+  assertLoopbackPulseOrigin(config.pulseOrigin);
+
+  // Load the persisted rate-limit counter so a restart cannot reset the
+  // failed-pairing window (defends against restart-induced brute force).
+  initRateLimiter(config.stateDir);
 
   const secrets = loadOrCreateGatewaySecrets(config.stateDir);
   const server = Bun.serve({
@@ -68,10 +81,46 @@ export function startGateway(config: GatewayConfig): ReturnType<typeof Bun.serve
     fetch: (request) => handleGatewayRequest(request, config, secrets),
   });
 
+  // Graceful shutdown: systemd sends SIGTERM on stop/restart (SIGINT on Ctrl-C).
+  // Stop accepting connections and let in-flight requests drain instead of being
+  // killed mid-response.
+  const shutdown = (signal: NodeJS.Signals): void => {
+    console.log(`pai-anywhere gateway received ${signal}; shutting down`);
+    server.stop();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+
   console.log(`pai-anywhere gateway listening on http://${server.hostname}:${server.port}`);
   console.log("pairing code loaded from environment; value not printed to stdout");
 
   return server;
+}
+
+/**
+ * Validate that pulseOrigin is a loopback http origin. Throws (fail closed) if:
+ *  - it is not a parseable URL,
+ *  - the protocol is not exactly "http:" (no https/ftp/protocol-relative),
+ *  - it carries userinfo (http://user:pass@host bypasses host checks in some
+ *    parsers and is never legitimate for a loopback upstream),
+ *  - the hostname is not a loopback name/address (127.0.0.0/8, ::1, localhost).
+ */
+export function assertLoopbackPulseOrigin(pulseOrigin: string): void {
+  let url: URL;
+  try {
+    url = new URL(pulseOrigin);
+  } catch {
+    throw new Error(`invalid PAI_ANYWHERE_PULSE_ORIGIN (not a URL): ${pulseOrigin}`);
+  }
+  if (url.protocol !== "http:") {
+    throw new Error(`PAI_ANYWHERE_PULSE_ORIGIN must use http: (got ${url.protocol || "no protocol"})`);
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw new Error("PAI_ANYWHERE_PULSE_ORIGIN must not contain a username or password");
+  }
+  if (!isLoopbackPulseHost(url.hostname)) {
+    throw new Error(`PAI_ANYWHERE_PULSE_ORIGIN host must be loopback (127.0.0.0/8, ::1, localhost): ${url.hostname}`);
+  }
 }
 
 export async function handleGatewayRequest(
@@ -271,11 +320,21 @@ async function proxyPulse(request: Request, config: GatewayConfig): Promise<Resp
   headers.delete("content-length");
 
   try {
-    return await fetch(upstream, {
+    const upstreamRes = await fetch(upstream, {
       method: request.method,
       headers,
       body,
       redirect: "manual",
+    });
+    // (T3) Rewrite the Server header on the proxied response too so neither the
+    // gateway's nor Pulse's runtime/version leaks through. Re-wrap in a fresh
+    // Response because a fetch() Response's headers are immutable.
+    const outHeaders = new Headers(upstreamRes.headers);
+    outHeaders.set("server", "pai-anywhere");
+    return new Response(upstreamRes.body, {
+      status: upstreamRes.status,
+      statusText: upstreamRes.statusText,
+      headers: outHeaders,
     });
   } catch {
     return json({ error: "pulse unavailable" }, { status: 502 });
@@ -305,6 +364,12 @@ function securityHeaders(contentType: string): Record<string, string> {
     "content-security-policy": "default-src 'none'; form-action 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
     "x-content-type-options": "nosniff",
     "referrer-policy": "no-referrer",
+    // (T19) Tailscale Serve terminates HTTPS in front of this gateway, so pin
+    // HSTS for the tailnet hostname.
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    // (T3) Bun.serve advertises "Server: Bun/x.y.z" by default; overwrite it with
+    // a static generic value so we never leak the runtime/version.
+    "server": "pai-anywhere",
   };
 }
 
@@ -314,7 +379,7 @@ function pairingPage(error = ""): string {
       <h1>pai-anywhere</h1>
       <form method="post" action="/auth/pair">
         <label for="code">Pairing code</label>
-        <input id="code" name="code" autocomplete="one-time-code" pattern="[A-Za-z0-9_\\-]{12,32}" required autofocus>
+        <input id="code" name="code" autocomplete="one-time-code" pattern="[A-Za-z0-9_\\-]{20}" required autofocus>
         ${error ? `<p class="error">${escapeHtml(error)}</p>` : ""}
         <button type="submit">Pair</button>
       </form>
@@ -370,5 +435,20 @@ function valueAfter(args: string[], flag: string): string | null {
 }
 
 function isLoopbackHost(hostname: string): boolean {
+  // (T15) "localhost" is intentionally accepted: it is a reserved loopback name
+  // (RFC 6761) that resolves to 127.0.0.1/::1, so binding to it never exposes a
+  // routable interface. Keep it alongside the literal loopback addresses.
   return hostname === "127.0.0.1" || hostname === "::1" || hostname === "localhost";
+}
+
+/**
+ * Loopback check for a URL hostname (as produced by WHATWG `new URL().hostname`).
+ * Accepts the whole 127.0.0.0/8 block (not just 127.0.0.1), the IPv6 loopback
+ * ::1 (which URL surfaces bracketed as "[::1]"), and the "localhost" name.
+ */
+function isLoopbackPulseHost(hostname: string): boolean {
+  if (hostname === "localhost") return true;
+  if (hostname === "[::1]" || hostname === "::1") return true;
+  // 127.0.0.0/8 — any 127.x.y.z is loopback.
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
 }
