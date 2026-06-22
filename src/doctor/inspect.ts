@@ -132,15 +132,27 @@ function checkPulse(): DoctorCheck {
 function checkUfw(): DoctorCheck {
   if (!cmdExists("ufw"))
     return { id: "firewall.ufw", title: "ufw firewall", status: "info", summary: "ufw is not installed" };
-  const r = run(["ufw", "status", "verbose"], 5_000);
+  // `ufw status` requires root. doctor usually runs as the unprivileged managed
+  // user, so reading it directly leaks "ERROR: You need to be root". Elevate when
+  // we can; otherwise report cleanly rather than surfacing the raw error.
+  const r = runPrivileged(["ufw", "status", "verbose"], 5_000);
+  if (!r.privileged)
+    return { id: "firewall.ufw", title: "ufw firewall", status: "info",
+      summary: "ufw is installed; status needs root (run doctor as root or with sudo)" };
   return { id: "firewall.ufw", title: "ufw firewall", status: "info",
-    summary: firstLine(r.out || r.err) || "ufw status checked" };
+    summary: firstLine(r.out) || firstLine(r.err) || "ufw status checked" };
 }
 
 function checkFail2ban(): DoctorCheck {
   if (!cmdExists("fail2ban-client"))
     return { id: "hardening.fail2ban", title: "fail2ban", status: "info", summary: "fail2ban is not installed" };
-  const r = run(["fail2ban-client", "ping"], 5_000);
+  // `fail2ban-client ping` talks to a root-owned socket, so an unprivileged probe
+  // can't reach a healthy daemon. Elevate when possible; if we can't, say the
+  // status is unknown (INFO) instead of falsely warning the daemon is down.
+  const r = runPrivileged(["fail2ban-client", "ping"], 5_000);
+  if (!r.privileged)
+    return { id: "hardening.fail2ban", title: "fail2ban", status: "info",
+      summary: "fail2ban is installed; daemon status needs root (run doctor as root or with sudo)" };
   return { id: "hardening.fail2ban", title: "fail2ban",
     status: r.code === 0 ? "pass" : "warn",
     summary: r.code === 0 ? "fail2ban daemon responded" : "fail2ban installed but daemon did not respond" };
@@ -195,6 +207,29 @@ function checkManifest(): DoctorCheck {
 }
 
 // --- helpers ---
+
+function isRoot(): boolean {
+  return typeof process.getuid === "function" && process.getuid() === 0;
+}
+
+// Memoize the sudo probe: passwordless-sudo availability can't change within a
+// single doctor run, and `sudo -n true` is cheap but not free.
+let _canSudoNonInteractive: boolean | null = null;
+function canSudoNonInteractive(): boolean {
+  if (_canSudoNonInteractive === null)
+    _canSudoNonInteractive = cmdExists("sudo") && run(["sudo", "-n", "true"], 3_000).code === 0;
+  return _canSudoNonInteractive;
+}
+
+// Run a command with root privileges when possible. Returns privileged=false
+// (without running anything) when the probe is unprivileged and can't elevate,
+// so callers can report "needs root" instead of misreading a permission error
+// as a real failure.
+function runPrivileged(cmd: string[], ms = 5_000): { code: number | null; out: string; err: string; privileged: boolean } {
+  if (isRoot()) return { ...run(cmd, ms), privileged: true };
+  if (canSudoNonInteractive()) return { ...run(["sudo", "-n", ...cmd], ms), privileged: true };
+  return { code: null, out: "", err: "", privileged: false };
+}
 
 function safeUser(): { username: string; uid: number | null } {
   try {
