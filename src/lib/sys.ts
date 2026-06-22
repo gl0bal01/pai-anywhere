@@ -14,9 +14,18 @@ export function run(cmd: string[], ms = 10_000): { code: number | null; out: str
 // every caller passes a hardcoded string literal (e.g. "ss", "systemctl",
 // "tailscale"). Do NOT pass untrusted/user-controlled input here — there is no
 // general escaping beyond the single-quote wrap below.
+//
+// NOT a login shell: `sh -lc` sources the user's profile, which (a) resets PATH
+// from /etc/profile — dropping /usr/sbin and /sbin for non-root users, so admin
+// tools like ufw vanish — and (b) can abort outright when a profile.d snippet
+// uses bash syntax under dash, making `command -v` never run and every dep look
+// missing. Run a plain shell and search a PATH augmented with the standard
+// admin directories so probes find binaries regardless of the caller's account.
+const PROBE_PATH = `${process.env.PATH ?? ""}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
+
 export function cmdExists(name: string): boolean {
-  return spawnSync("sh", ["-lc", `command -v '${name.replaceAll("'", "'\\''")}' >/dev/null 2>&1`],
-    { timeout: 2_000 }).status === 0;
+  return spawnSync("sh", ["-c", `command -v '${name.replaceAll("'", "'\\''")}' >/dev/null 2>&1`],
+    { timeout: 2_000, env: { ...process.env, PATH: PROBE_PATH } }).status === 0;
 }
 
 export function firstLine(s: string): string {
