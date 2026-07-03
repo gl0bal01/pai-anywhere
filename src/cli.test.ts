@@ -49,6 +49,7 @@ describe("reset-access half-rotation guard (T2)", () => {
     expect(code).toBe(1);
     // The critical safety property: nothing was rotated/written.
     expect(existsSync(join(stateDir, "gateway-secrets.json"))).toBe(false);
+    expect(existsSync(join(stateDir, "pairing-code.txt"))).toBe(false);
     expect(existsSync(join(cfgDir, "gateway.env"))).toBe(false);
   });
 });

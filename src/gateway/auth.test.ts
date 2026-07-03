@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  SECURE_SESSION_COOKIE,
   SESSION_COOKIE,
   canAttemptPairing,
   clearFailedPairing,
@@ -129,6 +130,38 @@ describe("session cookie HMAC integrity", () => {
       headers: { cookie: `${SESSION_COOKIE}=${cookieValue}` },
     });
     expect(isAuthenticated(req, wrongSecrets)).toBe(false);
+  });
+});
+
+// ── L9: __Host- cookie prefix when Secure ─────────────────────────────────────
+
+describe("__Host- cookie prefix", () => {
+  let secrets: GatewaySecrets;
+
+  beforeAll(() => {
+    secrets = loadOrCreateGatewaySecrets(tmpDir);
+  });
+
+  test("secure config issues a __Host- prefixed, Secure, Path=/ cookie", () => {
+    const header = createSessionCookie(makeConfig({ cookieSecure: true }), secrets);
+    expect(header.startsWith(`${SECURE_SESSION_COOKIE}=`)).toBe(true);
+    expect(header).toContain("; Secure");
+    expect(header).toContain("Path=/");
+    expect(header).not.toContain("Domain=");
+  });
+
+  test("insecure config keeps the plain cookie name (browsers reject __Host- without Secure)", () => {
+    const header = createSessionCookie(makeConfig({ cookieSecure: false }), secrets);
+    expect(header.startsWith(`${SESSION_COOKIE}=`)).toBe(true);
+  });
+
+  test("a __Host- cookie authenticates", () => {
+    const header = createSessionCookie(makeConfig({ cookieSecure: true }), secrets);
+    const cookieValue = header.split(";")[0]!.split("=").slice(1).join("=");
+    const req = new Request("http://127.0.0.1/", {
+      headers: { cookie: `${SECURE_SESSION_COOKIE}=${cookieValue}` },
+    });
+    expect(isAuthenticated(req, secrets)).toBe(true);
   });
 });
 

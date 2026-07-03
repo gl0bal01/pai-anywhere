@@ -95,6 +95,19 @@ export function resetAccess(): number {
   // 20-char base64url pairing code (120 bits entropy)
   const pairingCode = randomBytes(15).toString("base64url");
 
+  // (H3) Rotate pairing-code.txt FIRST — it is the canonical store. install.sh
+  // rebuilds gateway.env from this file on every idempotent re-run, and the
+  // docs tell operators to retrieve the code from it. Leaving the old code
+  // there would serve a leaked code and silently revert this rotation on the
+  // next install.sh run.
+  const pairingFile = join(state, "pairing-code.txt");
+  writeAtomic(pairingFile, `${pairingCode}\n`, 0o600);
+  try {
+    chownSync(pairingFile, ids.uid, ids.gid);
+  } catch {
+    console.error(`Warning: could not chown ${pairingFile} to ${user}; check its ownership/permissions.`);
+  }
+
   // Write gateway.env for EnvironmentFile= in systemd unit
   const envFile = join(cfg, "gateway.env");
   const envContent = [
@@ -148,8 +161,16 @@ export function resetAccess(): number {
     }
   }
 
-  console.log(`New pairing code: ${pairingCode}`);
-  console.log(`Written to ${envFile} (mode 0600)`);
+  // (L5) Print the raw code only to an interactive terminal. Piped/captured
+  // output (sudo sessions logged, CI, tee) gets a pointer to the 0600 file
+  // instead — same gating as install.sh's print_done.
+  if (process.stdout.isTTY) {
+    console.log(`New pairing code: ${pairingCode}`);
+  } else {
+    console.log("New pairing code generated (hidden — non-interactive output).");
+    console.log(`Retrieve on server: sudo cat ${pairingFile}`);
+  }
+  console.log(`Written to ${pairingFile} and ${envFile} (mode 0600)`);
   return exitCode;
 }
 

@@ -25,7 +25,9 @@ const GATEWAY_LOCAL_PATHS = new Set([
   "/auth/logout",
   "/terminal",
 ]);
-const ALLOWED_PULSE_METHODS = new Set(["GET", "POST", "HEAD", "OPTIONS"]);
+// GET/POST/HEAD only — matches the documented threat-model allowlist. Pulse is
+// same-origin behind the gateway, so CORS preflight (OPTIONS) never occurs.
+const ALLOWED_PULSE_METHODS = new Set(["GET", "POST", "HEAD"]);
 
 export function gatewayConfigFromArgs(args: string[]): GatewayConfig {
   const envPairingCode = process.env.PAI_ANYWHERE_PAIRING_CODE;
@@ -261,6 +263,13 @@ async function proxyPulse(request: Request, config: GatewayConfig): Promise<Resp
     return json({ error: "method not allowed" }, { status: 405 });
   }
 
+  // This proxy speaks plain fetch and cannot tunnel WebSocket upgrades. Reject
+  // them explicitly so a Pulse live-update client sees a clear error instead
+  // of a silently hung connection.
+  if ((request.headers.get("upgrade") || "").toLowerCase().includes("websocket")) {
+    return json({ error: "websocket proxying is not supported" }, { status: 501 });
+  }
+
   const url = new URL(request.url);
 
   // Reject gateway-namespace paths (must not reach Pulse)
@@ -330,6 +339,14 @@ async function proxyPulse(request: Request, config: GatewayConfig): Promise<Resp
     // gateway's nor Pulse's runtime/version leaks through. Re-wrap in a fresh
     // Response because a fetch() Response's headers are immutable.
     const outHeaders = new Headers(upstreamRes.headers);
+    // fetch() may have transparently decompressed the upstream body, so the
+    // original content-encoding/content-length no longer describe the bytes we
+    // forward — passing them through would corrupt responses (e.g. a client
+    // gunzipping already-plain bytes). Drop framing headers and let the
+    // runtime recompute them from the actual body.
+    outHeaders.delete("content-encoding");
+    outHeaders.delete("content-length");
+    outHeaders.delete("transfer-encoding");
     outHeaders.set("server", "pai-anywhere");
     return new Response(upstreamRes.body, {
       status: upstreamRes.status,

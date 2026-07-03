@@ -18,11 +18,21 @@ let secrets: GatewaySecrets;
 let mockPulse: ReturnType<typeof Bun.serve>;
 
 beforeAll(() => {
-  // Mock Pulse upstream: always 200 for any request that reaches it
+  // Mock Pulse upstream: always 200 for any request that reaches it.
+  // /gz serves a genuinely gzipped body so the proxy's framing-header
+  // stripping can be asserted against a transparently-decompressed fetch.
   mockPulse = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: () => new Response("ok", { status: 200 }),
+    fetch: (req) => {
+      if (new URL(req.url).pathname === "/gz") {
+        return new Response(Bun.gzipSync(Buffer.from("gzipped-ok")), {
+          status: 200,
+          headers: { "content-encoding": "gzip", "content-type": "text/plain" },
+        });
+      }
+      return new Response("ok", { status: 200 });
+    },
   });
 
   tmpDir = mkdtempSync(join(tmpdir(), "pai-server-test-"));
@@ -199,6 +209,43 @@ describe("method allowlist", () => {
       secrets,
     );
     expect(res.status).toBe(405);
+  });
+
+  test("OPTIONS / returns 405 (allowlist is GET/POST/HEAD per threat model)", async () => {
+    const res = await handleGatewayRequest(
+      authedReq("http://127.0.0.1/", { method: "OPTIONS" }),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(405);
+  });
+});
+
+// ── WebSocket upgrade (unsupported by the fetch-based proxy) ──────────────────
+
+describe("websocket upgrade", () => {
+  test("authenticated upgrade request returns 501 instead of hanging", async () => {
+    const res = await handleGatewayRequest(
+      authedReq("http://127.0.0.1/api/live", {
+        headers: { upgrade: "websocket", connection: "Upgrade" },
+      }),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(501);
+  });
+});
+
+// ── Proxied response framing headers (compression pass-through) ───────────────
+
+describe("proxied response framing", () => {
+  test("gzip upstream response is delivered intact with content-encoding stripped", async () => {
+    // fetch() decompresses the upstream body transparently; forwarding the
+    // original content-encoding/content-length would corrupt the response.
+    const res = await handleGatewayRequest(authedReq("http://127.0.0.1/gz"), config, secrets);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-encoding")).toBeNull();
+    expect(await res.text()).toBe("gzipped-ok");
   });
 });
 

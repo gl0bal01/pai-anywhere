@@ -31,6 +31,7 @@ ALLOWED_PREFIXES=(
   "${PAI_HOME}"
   "/etc/systemd/system/pai-anywhere.service"
   "/etc/systemd/system/pai-pulse.service"
+  "/usr/local/bin/pai-anywhere"
   "/usr/share/keyrings/tailscale-archive-keyring.gpg"
   "/etc/apt/sources.list.d/tailscale.list"
 )
@@ -113,7 +114,11 @@ safe_remove() {
     # List immediate children not in manifest
     local child
     while IFS= read -r -d '' child; do
-      if ! echo "${manifest_paths}" | grep -qF "${child}"; then
+      # -x: exact whole-line match. A substring match (-qF alone) would count
+      # "/etc/pai-anywhere/VER" as owned because the manifest lists
+      # ".../VERSION" — and an all-children-prefix-collision would then
+      # rm -rf the directory including unowned content.
+      if ! echo "${manifest_paths}" | grep -qFx "${child}"; then
         # Child not in manifest — this directory contains unowned content
         warn "Directory '${target}' contains unowned content: ${child}"
         warn "Removing only the pai-anywhere-owned children; directory structure preserved."
@@ -274,7 +279,18 @@ main() {
     [[ -z "${path}" ]] && continue
     case "${kind}" in
       file|directory)
-        safe_remove "${path}"
+        # Compat: manifests written by install.sh <= v0.2.3 recorded systemd
+        # units as kind=file. Route them through disable_service so the
+        # service is stopped/disabled, not just its unit file deleted.
+        case "${path}" in
+          /etc/systemd/system/*.service)
+            disable_service "$(basename "${path}")"
+            needs_daemon_reload=1
+            ;;
+          *)
+            safe_remove "${path}"
+            ;;
+        esac
         ;;
       systemd-service)
         disable_service "$(basename "${path}")"
@@ -298,11 +314,30 @@ main() {
   done
 
   if [[ "${needs_daemon_reload}" -eq 1 ]]; then
-    systemctl daemon-reload
-    info "systemd daemon reloaded."
+    # Never abort here: in a non-systemd environment (CI containers) the
+    # reload cannot work, and the file removals above already succeeded.
+    if systemctl daemon-reload 2>/dev/null; then
+      info "systemd daemon reloaded."
+    else
+      warn "systemctl daemon-reload failed (non-systemd environment?) — continuing."
+    fi
   fi
 
   remove_tailscale_serve
+
+  # Full uninstall: archive the manifest so a second run does not reprocess
+  # it, and clean up runtime artifacts that are never manifest-recorded
+  # (single-flight lock, staged installer tmp, rate-limit counter). Rollback
+  # keeps the manifest — a re-run of install.sh appends to it.
+  if [[ "${rollback_mode}" -eq 0 ]]; then
+    rm -f "${CFG_DIR}/.install.lock" "${STATE_DIR}/rate-limit.json" 2>/dev/null || true
+    rm -rf "${STATE_DIR}/tmp" 2>/dev/null || true
+    if [[ -f "${MANIFEST}" ]]; then
+      mv "${MANIFEST}" "${MANIFEST}.uninstalled"
+      info "Manifest archived to ${MANIFEST}.uninstalled"
+    fi
+    rmdir "${CFG_DIR}" "${STATE_DIR}" 2>/dev/null || true
+  fi
 
   info "pai-anywhere uninstalled."
   if [[ "${rollback_mode}" -eq 0 ]]; then

@@ -49,6 +49,10 @@ printf '{"ts":"%s","kind":"directory","path":"%s","action":"create"}\n' "${NOW}"
 printf '{"ts":"%s","kind":"file","path":"%s","action":"create"}\n'      "${NOW}" "${CFG_DIR}/VERSION" >> "${MANIFEST}"
 printf '{"ts":"%s","kind":"user","path":"%s","action":"create"}\n'      "${NOW}" "${PAI_HOME}"   >> "${MANIFEST}"
 printf '{"ts":"%s","kind":"file","path":"%s","action":"create"}\n'      "${NOW}" "${PAI_HOME}/.claude/PAI/Pulse" >> "${MANIFEST}"
+# systemd units are recorded with kind=systemd-service so rollback stops and
+# disables them before deleting the unit file (regression guard: kind=file
+# left the service running with old secrets in memory).
+printf '{"ts":"%s","kind":"systemd-service","path":"%s","action":"create"}\n' "${NOW}" "/etc/systemd/system/pai-anywhere.service" >> "${MANIFEST}"
 
 # Create corresponding artefacts
 printf '0.1.0-partial\n' > "${CFG_DIR}/VERSION"
@@ -58,6 +62,8 @@ passwd -l "${PAI_USER}" 2>/dev/null || true
 mkdir -p "${PAI_HOME}/.claude/PAI"
 ln -s PULSE "${PAI_HOME}/.claude/PAI/Pulse"
 touch "${APP_DIR}/src/cli.ts"
+mkdir -p /etc/systemd/system
+printf '[Unit]\nDescription=pai-anywhere test unit\n' > /etc/systemd/system/pai-anywhere.service
 
 # ── Phases 9-15 did NOT run — no systemd units, no tailscale serve ─────────────
 printf '[info] Partial state created; running uninstall.sh --rollback...\n'

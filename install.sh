@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # pai-anywhere install.sh — bootstrap a private PAI host on Ubuntu/Debian.
-# Usage:  curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.2.3/install.sh | bash
+# Usage:  curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.2.4/install.sh | bash
 # Docs:   docs/QUICKSTART.md
 # Threat model: docs/THREAT_MODEL.md
 set -eEuo pipefail
@@ -26,7 +26,7 @@ CFG_DIR="/etc/pai-anywhere"
 STATE_DIR="/var/lib/pai-anywhere"
 MANIFEST="${CFG_DIR}/install-manifest.jsonl"
 VERSION_FILE="${CFG_DIR}/VERSION"
-VERSION="0.2.3"
+VERSION="0.2.4"
 BUN_BIN="${PAI_HOME}/.bun/bin/bun"
 BUN_BASE_URL="https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}"
 
@@ -46,10 +46,24 @@ phase() { printf "\n${BOLD}[phase=%s status=start]${NC}\n" "$*"; }
 phase_ok() { printf "${BOLD}[phase=%s status=ok]${NC}\n" "$*"; }
 
 # ── audit primitive (intent log — record BEFORE mutation) ─────────────────────
+json_escape() {
+  # Escape a string for embedding in a JSON string literal. Paths recorded in
+  # the manifest can come from `find` (symlink cleanup) and may contain
+  # backslashes, quotes, or control characters; unescaped they corrupt the
+  # JSONL and make uninstall.sh abort (fail-closed but unrecoverable).
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "${s}"
+}
+
 record() {
   # $1=kind  $2=path  $3=action
   printf '{"ts":"%s","kind":"%s","path":"%s","action":"%s"}\n' \
-    "$(date -u +%FT%TZ)" "$1" "$2" "$3" >> "${MANIFEST}"
+    "$(date -u +%FT%TZ)" "$1" "$(json_escape "$2")" "$3" >> "${MANIFEST}"
 }
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -478,14 +492,29 @@ install_gateway_app() {
   ln -sf "${APP_DIR}/src/cli.ts" "${APP_DIR}/bin/pai-anywhere" 2>/dev/null || true
   chown -R "${PAI_USER}:${PAI_USER}" "${APP_DIR}"
 
+  # System-wide launcher so `sudo pai-anywhere <cmd>` works as documented.
+  # A bare symlink to src/cli.ts is not enough: the file is mode 644 and its
+  # `#!/usr/bin/env bun` shebang cannot resolve bun on root's PATH (bun lives
+  # only under ${PAI_HOME}/.bun/bin). A root-owned wrapper fixes all three.
+  local launcher="/usr/local/bin/pai-anywhere"
+  record "file" "${launcher}" "create"
+  cat > "${launcher}" <<LAUNCHER
+#!/usr/bin/env bash
+# Installed by pai-anywhere install.sh — do not edit (reinstall replaces it).
+exec "${BUN_BIN}" run "${APP_DIR}/src/cli.ts" "\$@"
+LAUNCHER
+  chmod 755 "${launcher}"
+  chown root:root "${launcher}"
+
   # Install TS deps as pai user (after chown so node_modules can be created)
   runuser -u "${PAI_USER}" -- bash -c "
     export HOME='${PAI_HOME}'
     export PATH='${PAI_HOME}/.bun/bin:\$PATH'
     cd '${APP_DIR}'
     bun install --frozen-lockfile --production || {
-      echo '[warn] frozen-lockfile install failed — lockfile may be out of sync; retrying unpinned' >&2
-      bun install --production
+      echo '[error] bun install --frozen-lockfile failed — lockfile out of sync with package.json.' >&2
+      echo '[error] Refusing an unpinned dependency install (supply-chain pinning). Fix the lockfile and re-run.' >&2
+      exit 1
     }
   "
   info "Gateway app installed to ${APP_DIR}."
@@ -552,7 +581,10 @@ write_systemd_units() {
   local svc_gateway="/etc/systemd/system/pai-anywhere.service"
   local svc_pulse="/etc/systemd/system/pai-pulse.service"
 
-  record "file" "${svc_gateway}" "create"
+  # kind=systemd-service so uninstall/rollback stops+disables the unit before
+  # deleting its file (kind=file would leave the service running with old
+  # secrets in memory and dangling enable-symlinks).
+  record "systemd-service" "${svc_gateway}" "create"
   cat > "${svc_gateway}" <<GATEWAY_UNIT
 [Unit]
 Description=pai-anywhere private loopback gateway
@@ -587,7 +619,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 WantedBy=multi-user.target
 GATEWAY_UNIT
 
-  record "file" "${svc_pulse}" "create"
+  record "systemd-service" "${svc_pulse}" "create"
   cat > "${svc_pulse}" <<PULSE_UNIT
 [Unit]
 Description=PAI Pulse loopback service
@@ -700,18 +732,26 @@ tailscale_serve_private() {
 
 verify_install() {
   phase "verify"
-  local pai_bin="${APP_DIR}/bin/pai-anywhere"
-  if [[ ! -x "${pai_bin}" ]] && [[ ! -L "${pai_bin}" ]]; then
-    error "Gateway binary not found at ${pai_bin}"
+  # The documented entrypoint must actually work — execute it, don't just
+  # test for a symlink (a dangling/broken launcher passed the old check).
+  local launcher="/usr/local/bin/pai-anywhere"
+  if [[ ! -x "${launcher}" ]]; then
+    error "Launcher not found or not executable at ${launcher}"
     exit 1
   fi
-  info "Running doctor …"
-  runuser -u "${PAI_USER}" -- env HOME="${PAI_HOME}" \
-    PATH="${PAI_HOME}/.bun/bin:${PATH}" \
-    PAI_ANYWHERE_STATE_DIR="${STATE_DIR}" \
+  if ! "${launcher}" help >/dev/null 2>&1; then
+    error "Launcher at ${launcher} failed to execute. Installation incomplete."
+    exit 1
+  fi
+  # Run the post-install probes (gateway service + auth gate, Pulse health,
+  # profile, manifest, Serve safety) — NOT the read-only doctor inspection,
+  # which passes even with a dead gateway. Runs as root: the tailscale-serve
+  # probe needs root, and this is the same context as the installer itself.
+  info "Running post-install verification (pai-anywhere verify) …"
+  env PAI_ANYWHERE_STATE_DIR="${STATE_DIR}" \
     PAI_ANYWHERE_CONFIG_DIR="${CFG_DIR}" \
-    "${BUN_BIN}" run "${APP_DIR}/src/cli.ts" doctor || {
-      error "Doctor reported failures. Installation incomplete."
+    "${launcher}" verify || {
+      error "Verification failed. Installation incomplete."
       exit 1
     }
   phase_ok "verify"
@@ -734,7 +774,9 @@ print_done() {
   local pairing
   pairing="$(cat "${STATE_DIR}/pairing-code.txt")"
 
-  clear
+  # `clear` exits non-zero when TERM is unset (some containers/CI); a cosmetic
+  # failure must not flip a successful install to "failed" under set -e.
+  clear 2>/dev/null || true
   printf '%b\n' "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   printf '%b\n' "${GREEN}  pai-anywhere ${VERSION} installed successfully!${NC}"
   printf '%b\n' "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -760,7 +802,7 @@ print_done() {
   printf '\n'
   printf '  Add this alias to ~/.zshrc (or ~/.bashrc) on each client device:\n'
   printf '\n'
-  printf '%b\n' "${GREEN}    alias pai='ssh ${SUDO_USER:-${USER}}@${tailnet_url} -t \"sudo -iu pai -- pai\"'${NC}"
+  printf '%b\n' "${GREEN}    alias pai='ssh ${SUDO_USER:-${USER:-root}}@${tailnet_url} -t \"sudo -iu pai -- pai\"'${NC}"
   printf '\n'
   printf '  Then type %bpai%b from anywhere — same memory, same auth, same VPS.\n' "${BOLD}" "${NC}"
   printf '  Tailscale handles the network. SSH key handles the auth.\n'

@@ -4,6 +4,16 @@ import { join } from "node:path";
 import type { GatewayConfig, GatewaySecrets, SessionPayload } from "./types";
 
 export const SESSION_COOKIE = "pai_anywhere_session";
+// (L9) With Secure cookies (the default behind Tailscale Serve HTTPS) use the
+// __Host- prefix: the browser then refuses the cookie unless it is Secure,
+// Path=/, and Domain-less — hardening against subdomain/sibling injection.
+// The plain name remains for cookieSecure=0 (local http testing), where a
+// browser would reject a __Host- cookie outright.
+export const SECURE_SESSION_COOKIE = "__Host-pai_anywhere_session";
+
+export function sessionCookieName(config: GatewayConfig): string {
+  return config.cookieSecure ? SECURE_SESSION_COOKIE : SESSION_COOKIE;
+}
 
 type AttemptBucket = {
   count: number;
@@ -57,17 +67,20 @@ export function createSessionCookie(config: GatewayConfig, secrets: GatewaySecre
   const secure = config.cookieSecure ? "; Secure" : "";
   // No Domain attribute by design: omitting it makes the cookie host-only, so it
   // is never sent to sibling subdomains of the tailnet name. Host-only is the
-  // tighter scope here; do not add a Domain.
-  return `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${config.sessionTtlSeconds}${secure}`;
+  // tighter scope here; do not add a Domain. (Path=/ is also required for the
+  // __Host- prefix to be accepted.)
+  return `${sessionCookieName(config)}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${config.sessionTtlSeconds}${secure}`;
 }
 
 export function clearSessionCookie(config: GatewayConfig): string {
   const secure = config.cookieSecure ? "; Secure" : "";
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
+  return `${sessionCookieName(config)}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
 }
 
 export function isAuthenticated(request: Request, secrets: GatewaySecrets): boolean {
-  const value = readCookie(request, SESSION_COOKIE);
+  // Accept either cookie name: which one was set depends on cookieSecure at
+  // issue time, and verification is signature-based either way.
+  const value = readCookie(request, SECURE_SESSION_COOKIE) ?? readCookie(request, SESSION_COOKIE);
   if (!value) return false;
   const payload = verifyPayload(value, secrets.sessionSecret);
   if (!payload) return false;
@@ -224,7 +237,14 @@ function secretsPath(stateDir: string): string {
 function writeJsonAtomic(path: string, value: unknown, mode: number): void {
   const tempPath = `${path}.tmp-${process.pid}`;
   writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode });
-  renameSync(tempPath, path);
+  // If renameSync throws (cross-device, EACCES on target), do not leave a
+  // 0600 temp file with secret content lingering next to the target.
+  try {
+    renameSync(tempPath, path);
+  } catch (error) {
+    try { unlinkSync(tempPath); } catch { /* temp already gone */ }
+    throw error;
+  }
 }
 
 function isGatewaySecrets(value: unknown): value is GatewaySecrets {
