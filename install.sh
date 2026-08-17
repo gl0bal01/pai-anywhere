@@ -7,7 +7,7 @@ set -eEuo pipefail
 
 # ── pinned constants ──────────────────────────────────────────────────────────
 PAI_INSTALLER_URL="https://ourpai.ai/install.sh"
-PAI_INSTALLER_SHA256="62814f512f461e684efc88d5ccdd7458fce45021bc55d7ad7f0d6eb97404129e"
+PAI_INSTALLER_SHA256="671db9c53cb6a700bf17790ce3d571feca7a6bf15bbf6d8caba0ed4b3d39e709"
 BUN_VERSION="1.3.13"
 BUN_SHA256_X86_64="79c0771fa8b92c33aae41e15a0e0d307ea99d0e2f00317c71c6c53237a78e25a"
 BUN_SHA256_ARM64="70bae41b3908b0a120e1e58c5c8af30e74afae3b8d11b0d3fdd8e787ddfb4b22"
