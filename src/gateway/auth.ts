@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GatewayConfig, GatewaySecrets, SessionPayload } from "./types";
@@ -20,9 +20,21 @@ type AttemptBucket = {
   resetAt: number;
 };
 
-// v0.1: single-tenant home VPS; global bucket.
-// Tailscale-User-Login per-user rate-limit upgrade deferred to v0.2.
-const GLOBAL_KEY = "global";
+// (M2) Per-source rate limiting: the bucket is keyed by the caller's tailnet
+// identity (Tailscale-User-Login, set by Tailscale Serve and unforgeable by the
+// client once Serve strips incoming copies), falling back to the socket remote
+// address, and finally to a single global bucket when neither is available
+// (handler invoked directly in tests). This replaces the v0.1 global bucket so
+// one noisy tailnet device cannot lock every other source out of pairing.
+export const GLOBAL_KEY = "global";
+type RateLimitFile = {
+  schema: "pai-anywhere.rate-limit.v2";
+  buckets: Record<string, AttemptBucket>;
+};
+// Every bucket mutation rewrites the whole persistence file, so this bound is
+// also the write-amplification bound: 256 buckets is ~15 KB per failed pairing
+// attempt, and far more distinct sources than a single-tenant tailnet has.
+const MAX_BUCKETS = 256;
 const attemptBuckets = new Map<string, AttemptBucket>();
 const MAX_ATTEMPTS = 10;
 const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
@@ -55,13 +67,18 @@ export function loadOrCreateGatewaySecrets(stateDir: string): GatewaySecrets {
   return secrets;
 }
 
-export function createSessionCookie(config: GatewayConfig, secrets: GatewaySecrets): string {
+export function createSessionCookie(config: GatewayConfig, secrets: GatewaySecrets, tailnetLogin = ""): string {
   const now = Math.floor(Date.now() / 1000);
   const payload: SessionPayload = {
     schema: "pai-anywhere.session.v1",
     iat: now,
     exp: now + config.sessionTtlSeconds,
     nonce: randomBytes(16).toString("base64url"),
+    // (M1) Bind the session to the pairing client's tailnet identity: a stolen
+    // cookie replayed from a different tailnet user fails isAuthenticated even
+    // though its signature is valid. Stored as a sha256 digest so the payload
+    // never carries the raw login.
+    ...(tailnetLogin ? { sub: hashIdentity(tailnetLogin) } : {}),
   };
   const value = signPayload(payload, secrets.sessionSecret);
   const secure = config.cookieSecure ? "; Secure" : "";
@@ -77,14 +94,47 @@ export function clearSessionCookie(config: GatewayConfig): string {
   return `${sessionCookieName(config)}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`;
 }
 
-export function isAuthenticated(request: Request, secrets: GatewaySecrets): boolean {
+export function isAuthenticated(
+  request: Request,
+  secrets: GatewaySecrets,
+  tailnetIdentityRequired = false,
+): boolean {
   // Accept either cookie name: which one was set depends on cookieSecure at
   // issue time, and verification is signature-based either way.
   const value = readCookie(request, SECURE_SESSION_COOKIE) ?? readCookie(request, SESSION_COOKIE);
   if (!value) return false;
   const payload = verifyPayload(value, secrets.sessionSecret);
   if (!payload) return false;
-  return payload.exp > Math.floor(Date.now() / 1000);
+  if (payload.exp <= Math.floor(Date.now() / 1000)) return false;
+  // (M1) When identity binding is required the request must carry the same
+  // tailnet login the session was paired with. Cookies issued before this
+  // feature (no sub) are rejected while required — reset-access re-pairs.
+  if (tailnetIdentityRequired) {
+    if (!payload.sub) return false;
+    const current = hashIdentity(tailnetIdentityHeader(request));
+    return digestEqual(payload.sub, current);
+  }
+  return true;
+}
+
+/**
+ * The tailnet identity Tailscale Serve stamps on the request (empty when the
+ * header is absent — e.g. tailnets without user isolation, or local testing).
+ */
+export function tailnetIdentityHeader(request: Request): string {
+  return (request.headers.get("Tailscale-User-Login") ?? "").trim();
+}
+
+/** sha256 hex digest of a tailnet login (used for session binding + comparison). */
+export function hashIdentity(login: string): string {
+  return createHash("sha256").update(login, "utf8").digest("hex");
+}
+
+function digestEqual(aHex: string, bHex: string): boolean {
+  const a = Buffer.from(aHex, "utf8");
+  const b = Buffer.from(bHex, "utf8");
+  if (a.length !== b.length || a.length === 0) return false;
+  return timingSafeEqual(a, b);
 }
 
 /**
@@ -97,72 +147,108 @@ export function isAuthenticated(request: Request, secrets: GatewaySecrets): bool
 export function initRateLimiter(stateDir: string): void {
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   rateLimitPath = join(stateDir, RATE_LIMIT_FILE);
-  const loaded = loadRateLimitBucket(rateLimitPath);
-  if (loaded) {
-    attemptBuckets.set(GLOBAL_KEY, loaded);
-  } else {
-    attemptBuckets.delete(GLOBAL_KEY);
+  const loaded = loadRateLimitFile(rateLimitPath);
+  attemptBuckets.clear();
+  for (const [key, bucket] of Object.entries(loaded)) {
+    if (bucket.resetAt > Date.now()) attemptBuckets.set(key, bucket);
   }
 }
 
-export function canAttemptPairing(): boolean {
+export function canAttemptPairing(sourceKey = GLOBAL_KEY): boolean {
   const now = Date.now();
-  const bucket = attemptBuckets.get(GLOBAL_KEY);
+  const bucket = attemptBuckets.get(sourceKey);
   if (!bucket || bucket.resetAt <= now) {
-    setBucket({ count: 0, resetAt: now + ATTEMPT_WINDOW_MS });
+    setBucket(sourceKey, { count: 0, resetAt: now + ATTEMPT_WINDOW_MS });
     return true;
   }
   return bucket.count < MAX_ATTEMPTS;
 }
 
-export function recordFailedPairing(): void {
+export function recordFailedPairing(sourceKey = GLOBAL_KEY): void {
   const now = Date.now();
-  const bucket = attemptBuckets.get(GLOBAL_KEY);
+  const bucket = attemptBuckets.get(sourceKey);
   if (!bucket || bucket.resetAt <= now) {
-    setBucket({ count: 1, resetAt: now + ATTEMPT_WINDOW_MS });
+    setBucket(sourceKey, { count: 1, resetAt: now + ATTEMPT_WINDOW_MS });
     return;
   }
   bucket.count += 1;
-  setBucket(bucket);
+  setBucket(sourceKey, bucket);
 }
 
-export function clearFailedPairing(): void {
-  attemptBuckets.delete(GLOBAL_KEY);
-  if (rateLimitPath) removeRateLimitFile(rateLimitPath);
+export function clearFailedPairing(sourceKey = GLOBAL_KEY): void {
+  attemptBuckets.delete(sourceKey);
+  if (rateLimitPath && attemptBuckets.size === 0) removeRateLimitFile(rateLimitPath);
+  else if (rateLimitPath) persistRateLimitFile(rateLimitPath);
 }
 
 /**
- * Test-only: clear the in-memory bucket and detach the persistence file so a
+ * Test-only: clear the in-memory buckets and detach the persistence file so a
  * suite that exercised disk-backed limiting cannot leak `rateLimitPath` into
  * other tests. Not used by production code.
  */
 export function resetRateLimiterForTests(): void {
-  attemptBuckets.delete(GLOBAL_KEY);
+  attemptBuckets.clear();
   rateLimitPath = null;
 }
 
-function setBucket(bucket: AttemptBucket): void {
-  attemptBuckets.set(GLOBAL_KEY, bucket);
-  if (rateLimitPath) persistRateLimitBucket(rateLimitPath, bucket);
+function setBucket(sourceKey: string, bucket: AttemptBucket): void {
+  attemptBuckets.set(sourceKey, bucket);
+  evictStaleBuckets();
+  if (rateLimitPath) persistRateLimitFile(rateLimitPath);
 }
 
-function loadRateLimitBucket(path: string): AttemptBucket | null {
-  if (!existsSync(path)) return null;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    return isAttemptBucket(parsed) ? parsed : null;
-  } catch {
-    // Corrupt/unreadable file → start fresh rather than crash-loop the gateway.
-    return null;
+/**
+ * Bound the map so a flood of distinct source keys (many tailnet identities or
+ * spoofed IPs) cannot grow memory unboundedly: drop expired buckets first,
+ * then the bucket with the oldest resetAt. Callers add at most one bucket per
+ * invocation, so the overflow loop runs at most once and this stays O(n).
+ *
+ * Eviction is itself a (bounded) rate-limit bypass: a flood of fresh keys can
+ * push out a saturated bucket. Accepted — the pairing code carries >=120 bits
+ * of entropy, so the limiter is anti-noise, not the thing standing between an
+ * attacker and the code.
+ */
+function evictStaleBuckets(): void {
+  const now = Date.now();
+  for (const [key, bucket] of attemptBuckets) {
+    if (bucket.resetAt <= now) attemptBuckets.delete(key);
+  }
+  while (attemptBuckets.size > MAX_BUCKETS) {
+    let oldestKey: string | null = null;
+    let oldestReset = Infinity;
+    for (const [key, bucket] of attemptBuckets) {
+      if (bucket.resetAt < oldestReset) { oldestReset = bucket.resetAt; oldestKey = key; }
+    }
+    if (!oldestKey) break;
+    attemptBuckets.delete(oldestKey);
   }
 }
 
-function persistRateLimitBucket(path: string, bucket: AttemptBucket): void {
+function loadRateLimitFile(path: string): Record<string, AttemptBucket> {
+  if (!existsSync(path)) return {};
   try {
-    writeJsonAtomic(path, bucket, 0o600);
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (isRateLimitFile(parsed)) return parsed.buckets;
+    // v1 format (a bare AttemptBucket persisted by v0.1) → migrate into the
+    // global bucket so an upgrade cannot reset the failed-pairing window.
+    if (isAttemptBucket(parsed)) return { [GLOBAL_KEY]: parsed };
+    return {};
+  } catch {
+    // Corrupt/unreadable file → start fresh rather than crash-loop the gateway.
+    return {};
+  }
+}
+
+function persistRateLimitFile(path: string): void {
+  try {
+    const file: RateLimitFile = {
+      schema: "pai-anywhere.rate-limit.v2",
+      buckets: Object.fromEntries(attemptBuckets),
+    };
+    writeJsonAtomic(path, file, 0o600);
   } catch {
     // Persistence is best-effort; a write failure must not break pairing. The
-    // in-memory bucket remains authoritative for the current process lifetime.
+    // in-memory buckets remain authoritative for the current process lifetime.
   }
 }
 
@@ -183,11 +269,24 @@ function isAttemptBucket(value: unknown): value is AttemptBucket {
     && Number.isFinite(candidate.resetAt);
 }
 
+function isRateLimitFile(value: unknown): value is RateLimitFile {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.schema !== "pai-anywhere.rate-limit.v2") return false;
+  if (!candidate.buckets || typeof candidate.buckets !== "object") return false;
+  for (const bucket of Object.values(candidate.buckets as Record<string, unknown>)) {
+    if (!isAttemptBucket(bucket)) return false;
+  }
+  return true;
+}
+
 export function pairingCodeMatches(provided: string, expected: string): boolean {
-  const providedBytes = Buffer.from(provided);
-  const expectedBytes = Buffer.from(expected);
-  if (providedBytes.length !== expectedBytes.length) return false;
-  return timingSafeEqual(providedBytes, expectedBytes);
+  // (L2) Compare fixed-length sha256 digests instead of the raw strings so the
+  // comparison is constant-time over equal-length buffers with no early-exit
+  // that would leak the expected code's length or per-byte prefix.
+  const providedDigest = createHash("sha256").update(provided, "utf8").digest();
+  const expectedDigest = createHash("sha256").update(expected, "utf8").digest();
+  return timingSafeEqual(providedDigest, expectedDigest);
 }
 
 function signPayload(payload: SessionPayload, secret: string): string {

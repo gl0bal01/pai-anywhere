@@ -107,6 +107,34 @@ curl -I https://<host>.<tailnet>.ts.net/__gateway/healthz
 
 Tailscale's admin panel also has a built-in policy preview: **Access controls → Preview**. Pick a source identity and a destination, and it will show whether the grant matches.
 
+## Pairing returns 403 "tailnet identity required"
+
+The gateway binds each session cookie to the tailnet identity that paired it, so a cookie stolen from one tailnet user is useless to another. That binding needs Tailscale Serve to stamp a `Tailscale-User-Login` header on the request, and **Serve does not stamp one for tagged nodes** — a device authenticated with a tag rather than a user identity has no user login to report. Pairing from such a device gets a 403 with this error and no amount of retyping the code will help.
+
+Check what the gateway actually sees:
+
+```bash
+# From the client device, through the tailnet URL:
+curl -s -X POST https://<host>.<tailnet>.ts.net/auth/pair \
+  -H 'content-type: application/json' -d '{"code":"wrong"}'
+# 403 "tailnet identity required"  -> no identity header reaches the gateway
+# 401 "invalid pairing code"       -> identity is fine, the code was wrong
+```
+
+Two ways forward:
+
+- **Preferred:** pair from a user-authenticated device (untagged), or re-authenticate the client device without a tag. Identity binding stays on and the protection is kept.
+- **Opt out** if your tailnet cannot supply identity headers at all:
+
+  ```bash
+  echo 'PAI_ANYWHERE_REQUIRE_TAILNET_IDENTITY=0' | sudo tee -a /etc/pai-anywhere/gateway.env
+  sudo systemctl restart pai-anywhere.service
+  ```
+
+  The cookie is still HMAC-signed and the pairing code still carries >=120 bits of entropy; you lose only the "cookie is useless to a different tailnet user" property. Grant-based reach control (above) becomes the load-bearing restriction, so narrow the `dst` if you take this route.
+
+Cookies issued before identity binding was introduced carry no binding and are rejected while it is required. Run `sudo pai-anywhere reset-access` and re-pair.
+
 ## Why not fail2ban for this?
 
 A common reflex is to wire `fail2ban` against the gateway's auth-failure logs. For pai-anywhere this is the wrong layer:

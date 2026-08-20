@@ -9,12 +9,25 @@ import {
   loadOrCreateGatewaySecrets,
   pairingCodeMatches,
   recordFailedPairing,
+  tailnetIdentityHeader,
 } from "./auth";
 import type { GatewayConfig, GatewaySecrets } from "./types";
 
 const DEFAULT_PORT = 8787;
 const MAX_PAIRING_BODY_BYTES = 2048;
 const MAX_PULSE_BODY_BYTES = 1_048_576; // 1 MB
+// (M5) Cap on proxied Pulse responses, enforced by counting bytes as they are
+// piped through. Trusted loopback upstream, so this is defense against a buggy
+// or compromised Pulse driving the gateway into memory pressure, not a routine
+// expectation.
+//
+// The body is STREAMED, not buffered. Buffering with `arrayBuffer()` would have
+// enforced nothing on a chunked response (the whole body lands in memory before
+// any size check can run) and would hang forever on a long-lived response such
+// as SSE. Counting through a TransformStream keeps memory bounded by
+// backpressure, works without a Content-Length, and lets streaming routes pass.
+// Past the ceiling the stream is errored, which cancels the upstream read.
+const MAX_PULSE_RESPONSE_BYTES = 32 * 1024 * 1024; // 32 MiB
 const TERMINAL_ROADMAP = "https://github.com/gl0bal01/pai-anywhere/issues/1";
 
 // Gateway-local routes (never proxied). Anything else (when authenticated) goes to Pulse.
@@ -49,6 +62,9 @@ export function gatewayConfigFromArgs(args: string[]): GatewayConfig {
     cookieSecure: process.env.PAI_ANYWHERE_COOKIE_SECURE !== "0",
     sessionTtlSeconds: Number.parseInt(process.env.PAI_ANYWHERE_SESSION_TTL_SECONDS || `${24 * 60 * 60}`, 10),
     pulseOrigin: process.env.PAI_ANYWHERE_PULSE_ORIGIN || "http://127.0.0.1:31337",
+    // (M1) Identity binding is on by default (pattern: cookieSecure). "0"
+    // opts out for tailnets where Tailscale Serve passes no user identity.
+    tailnetIdentityRequired: process.env.PAI_ANYWHERE_REQUIRE_TAILNET_IDENTITY !== "0",
   };
 }
 
@@ -77,10 +93,11 @@ export function startGateway(config: GatewayConfig): ReturnType<typeof Bun.serve
   initRateLimiter(config.stateDir);
 
   const secrets = loadOrCreateGatewaySecrets(config.stateDir);
-  const server = Bun.serve({
+  let server: ReturnType<typeof Bun.serve>;
+  server = Bun.serve({
     hostname: config.hostname,
     port: config.port,
-    fetch: (request) => handleGatewayRequest(request, config, secrets),
+    fetch: (request): Promise<Response> => handleGatewayRequest(request, config, secrets, server),
   });
 
   // Graceful shutdown: systemd sends SIGTERM on stop/restart (SIGINT on Ctrl-C).
@@ -129,22 +146,31 @@ export async function handleGatewayRequest(
   request: Request,
   config: GatewayConfig,
   secrets: GatewaySecrets,
+  server?: ReturnType<typeof Bun.serve>,
 ): Promise<Response> {
   const url = new URL(request.url);
 
+  // (L1) healthz stays unauthenticated (liveness probe) but reveals nothing
+  // beyond liveness: no service name, no versions, no state.
   if (url.pathname === "/__gateway/healthz" && request.method === "GET") {
-    return json({ ok: true, service: "pai-anywhere-gateway" });
+    return json({ ok: true });
   }
 
+  // (L1) /auth/status intentionally reports only an authenticated boolean for
+  // the pairing UI; it is the minimal disclosure the client needs.
   if (url.pathname === "/auth/status" && request.method === "GET") {
-    return json({ authenticated: isAuthenticated(request, secrets) });
+    return json({ authenticated: isAuthenticated(request, secrets, config.tailnetIdentityRequired) });
   }
 
   if (url.pathname === "/auth/pair" && request.method === "POST") {
-    return pair(request, config, secrets);
+    return pair(request, config, secrets, server);
   }
 
   if (url.pathname === "/auth/logout" && request.method === "POST") {
+    // (L3) Logout mutates session state; reject cross-site browser requests.
+    if (!sameOrigin(request)) {
+      return json({ error: "cross-origin request rejected" }, { status: 403 });
+    }
     const formLogout = (request.headers.get("content-type") || "").includes("application/x-www-form-urlencoded");
     if (formLogout) {
       return new Response(null, {
@@ -159,7 +185,7 @@ export async function handleGatewayRequest(
     return json({ ok: true }, { headers: { "set-cookie": clearSessionCookie(config) } });
   }
 
-  const authenticated = isAuthenticated(request, secrets);
+  const authenticated = isAuthenticated(request, secrets, config.tailnetIdentityRequired);
 
   // Anonymous root → pairing page
   if (url.pathname === "/" && request.method === "GET" && !authenticated) {
@@ -184,9 +210,41 @@ export async function handleGatewayRequest(
   return proxyPulse(request, config);
 }
 
-async function pair(request: Request, config: GatewayConfig, secrets: GatewaySecrets): Promise<Response> {
-  // v0.1: single global rate-limit bucket (single-tenant home VPS).
-  if (!canAttemptPairing()) {
+async function pair(
+  request: Request,
+  config: GatewayConfig,
+  secrets: GatewaySecrets,
+  server?: ReturnType<typeof Bun.serve>,
+): Promise<Response> {
+  // (L3) Pairing mints a session; reject cross-site browser requests. Requests
+  // without Origin/Sec-Fetch-Site (curl, API clients) pass — CSRF requires a
+  // browser, and browsers send these headers.
+  if (!sameOrigin(request)) {
+    return json({ error: "cross-origin request rejected" }, { status: 403 });
+  }
+
+  // (M1) When identity binding is on, refuse to pair requests that carry no
+  // tailnet identity. This is a configuration failure, not a pairing guess, so
+  // it does NOT consume rate-limit attempts.
+  const tailnetLogin = tailnetIdentityHeader(request);
+  if (config.tailnetIdentityRequired && !tailnetLogin) {
+    // Name the escape hatch: Tailscale Serve stamps no identity for tagged
+    // nodes, so an operator hitting this needs to know it is configuration and
+    // not a bad code. See docs/TAILNET_ACCESS.md § Pairing returns 403.
+    return json({
+      error: "tailnet identity required",
+      detail: "This request carried no Tailscale-User-Login header. Tailscale Serve does not "
+        + "stamp one for tagged nodes. Set PAI_ANYWHERE_REQUIRE_TAILNET_IDENTITY=0 in "
+        + "/etc/pai-anywhere/gateway.env and restart pai-anywhere.service to pair without it.",
+    }, { status: 403 });
+  }
+
+  // (M2) Per-source bucket: tailnet identity first, socket address as fallback
+  // (no server handle → global, i.e. direct handler invocation in tests).
+  const sourceKey = sourceKeyFor(request, server, config.tailnetIdentityRequired);
+
+  // (M2) Bucketed per source — one exhausted identity/IP cannot lock out others.
+  if (!canAttemptPairing(sourceKey)) {
     return json({ error: "too many pairing attempts" }, { status: 429 });
   }
 
@@ -198,7 +256,7 @@ async function pair(request: Request, config: GatewayConfig, secrets: GatewaySec
   // Fast reject on a declared oversize body…
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > MAX_PAIRING_BODY_BYTES) {
-    recordFailedPairing();
+    recordFailedPairing(sourceKey);
     return json({ error: "request body too large" }, { status: 413 });
   }
 
@@ -207,7 +265,7 @@ async function pair(request: Request, config: GatewayConfig, secrets: GatewaySec
     // …then enforce the cap on the actual bytes (Content-Length is spoofable / omittable).
     const buf = await request.arrayBuffer();
     if (buf.byteLength > MAX_PAIRING_BODY_BYTES) {
-      recordFailedPairing();
+      recordFailedPairing(sourceKey);
       return json({ error: "request body too large" }, { status: 413 });
     }
     if (isMultipart) {
@@ -229,21 +287,21 @@ async function pair(request: Request, config: GatewayConfig, secrets: GatewaySec
       }
     }
   } catch {
-    recordFailedPairing();
+    recordFailedPairing(sourceKey);
     return formPairing
       ? html(pairingPage("Invalid pairing request."), { status: 400 })
       : json({ error: "invalid pairing request" }, { status: 400 });
   }
 
   if (!pairingCodeMatches(provided, config.pairingCode)) {
-    recordFailedPairing();
+    recordFailedPairing(sourceKey);
     return formPairing
       ? html(pairingPage("Invalid pairing code."), { status: 401 })
       : json({ error: "invalid pairing code" }, { status: 401 });
   }
 
-  clearFailedPairing();
-  const cookie = createSessionCookie(config, secrets);
+  clearFailedPairing(sourceKey);
+  const cookie = createSessionCookie(config, secrets, tailnetLogin);
   if (formPairing) {
     return new Response(null, {
       status: 303,
@@ -325,6 +383,20 @@ async function proxyPulse(request: Request, config: GatewayConfig): Promise<Resp
   headers.delete("x-forwarded-host");
   headers.delete("x-forwarded-proto");
   headers.delete("forwarded");
+  // (M5) Credentials must not silently leak to the upstream: Pulse is a
+  // loopback-only service with no auth of its own, so any Authorization header
+  // reaching it is client state, never gateway intent.
+  headers.delete("authorization");
+  // (M5) Hop-by-hop headers (RFC 9110 §7.6.2) describe THIS connection, not the
+  // proxied one; forwarding them is a smuggling/hygiene hazard. Strip the full
+  // set even though fetch() re-serializes the request.
+  headers.delete("connection");
+  headers.delete("keep-alive");
+  headers.delete("proxy-authorization");
+  headers.delete("proxy-connection");
+  headers.delete("te");
+  headers.delete("trailer");
+  headers.delete("upgrade");
   // Body was re-buffered; let fetch recompute Content-Length from `body`.
   headers.delete("content-length");
 
@@ -335,6 +407,13 @@ async function proxyPulse(request: Request, config: GatewayConfig): Promise<Resp
       body,
       redirect: "manual",
     });
+    // Fast reject on a declared oversize response. Content-Length can lie low
+    // or be absent entirely (chunked), so this is only the cheap path — the
+    // stream counter below is the actual enforcement.
+    const upstreamLength = Number.parseInt(upstreamRes.headers.get("content-length") || "0", 10);
+    if (upstreamLength > MAX_PULSE_RESPONSE_BYTES) {
+      return json({ error: "pulse response too large" }, { status: 502 });
+    }
     // (T3) Rewrite the Server header on the proxied response too so neither the
     // gateway's nor Pulse's runtime/version leaks through. Re-wrap in a fresh
     // Response because a fetch() Response's headers are immutable.
@@ -348,7 +427,7 @@ async function proxyPulse(request: Request, config: GatewayConfig): Promise<Resp
     outHeaders.delete("content-length");
     outHeaders.delete("transfer-encoding");
     outHeaders.set("server", "pai-anywhere");
-    return new Response(upstreamRes.body, {
+    return new Response(capBody(upstreamRes.body, MAX_PULSE_RESPONSE_BYTES), {
       status: upstreamRes.status,
       statusText: upstreamRes.statusText,
       headers: outHeaders,
@@ -356,6 +435,87 @@ async function proxyPulse(request: Request, config: GatewayConfig): Promise<Resp
   } catch {
     return json({ error: "pulse unavailable" }, { status: 502 });
   }
+}
+
+/**
+ * (L3) CSRF guard for state-changing browser POSTs. Fail-closed when Origin or
+ * Sec-Fetch-Site is present and cross-site; fail-open when absent (curl/API
+ * clients — a browser always sends them on cross-site POSTs).
+ */
+function sameOrigin(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  if (origin !== null) {
+    try {
+      // Compare HOST (hostname + port), not full origin. Tailscale Serve
+      // terminates TLS and forwards plaintext to this loopback listener, so the
+      // browser sends `Origin: https://<host>` while `request.url` is rebuilt
+      // from the forwarded Host header as `http://<host>`. Comparing schemes
+      // would 403 every real browser pairing through the tailnet URL. The
+      // scheme carries no origin information here — the gateway is only ever
+      // reachable as plaintext loopback behind a terminator.
+      return new URL(origin).host === new URL(request.url).host;
+    } catch {
+      return false; // unparseable Origin → reject
+    }
+  }
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite !== null) {
+    // `same-site` is deliberately NOT accepted. Tailnet hosts share the
+    // registrable domain `<tailnet>.ts.net`, so any other host on the same
+    // tailnet is same-site-but-cross-origin and would otherwise be able to
+    // drive these state-changing POSTs from a page it serves.
+    return fetchSite === "same-origin" || fetchSite === "none";
+  }
+  return true;
+}
+
+/**
+ * (M5) Pipe an upstream body through a byte counter, erroring the stream once
+ * `limit` is exceeded. Returns null unchanged (204/304 have no body).
+ */
+function capBody(body: ReadableStream<Uint8Array> | null, limit: number): ReadableStream<Uint8Array> | null {
+  if (!body) return null;
+  let seen = 0;
+  return body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        seen += chunk.byteLength;
+        if (seen > limit) {
+          controller.error(new Error("pulse response exceeded the size ceiling"));
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    }),
+  );
+}
+
+/**
+ * (M2) Stable rate-limit key for a request: tailnet identity when Serve
+ * provides one, otherwise the socket address, otherwise the global bucket.
+ *
+ * `Tailscale-User-Login` is only authoritative because Serve strips any client
+ * copy and re-stamps it. When identity binding is OFF we are not asserting
+ * that Serve fronts us, so the header is just client input and keying on it
+ * would let one caller mint unlimited fresh buckets. Fall back to the socket
+ * address in that case.
+ */
+function sourceKeyFor(
+  request: Request,
+  server?: ReturnType<typeof Bun.serve>,
+  identityIsAuthoritative = false,
+): string {
+  const login = identityIsAuthoritative ? tailnetIdentityHeader(request) : "";
+  if (login) return `id:${login}`;
+  if (server && typeof server.requestIP === "function") {
+    try {
+      const ip = server.requestIP(request);
+      if (ip?.address) return `ip:${ip.address}`;
+    } catch {
+      /* fall through to global */
+    }
+  }
+  return "global";
 }
 
 function json(value: unknown, init: ResponseInit = {}): Response {

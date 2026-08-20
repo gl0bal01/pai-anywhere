@@ -57,6 +57,8 @@ V1 must be private by default. This checklist defines what install, verify, and 
 
 Reference scripts for daily age-encrypted snapshots live in [`extras/backup/`](../extras/backup/) (script + systemd unit + timer + offsite env example + README). The installer does not deploy them — the operator opts in by following `extras/backup/README.md`. The script captures `home/pai/.claude`, `etc/pai-anywhere`, and `var/lib/pai-anywhere`; off-site push is opt-in via `/etc/pai-anywhere/backup-offsite.env`.
 
+**Secrets are excluded from archives (M3):** `gateway.env` (pairing code), `pairing-code.txt`, `gateway-secrets.json`, and `rate-limit.json` never enter the tarball — they are re-derivable via `sudo pai-anywhere reset-access`, which is **mandatory after any restore** so the restored instance never shares credentials with the source instance.
+
 When wiring off-site backup, prefer the following operator pattern:
 
 - **Dedicated bucket** (e.g. `pai-anywhere-backups`) — do not share with unrelated workloads. R2 returns `404 NoSuchBucket` (not `403`) when a token cannot see a bucket; a successful write to bucket X with a token meant to be scoped to bucket Y proves the token's actual scope is wrong.

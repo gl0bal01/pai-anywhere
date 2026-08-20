@@ -153,7 +153,7 @@ Or alias it on the VPS too: `echo "alias paime='sudo -iu pai'" >> ~/.zshrc`.
 | Tail gateway logs | `sudo journalctl -u pai-anywhere.service -f` |
 | Restart gateway | `sudo systemctl restart pai-anywhere.service` |
 | Uninstall completely | `sudo /opt/pai-anywhere/uninstall.sh` |
-| Update PAI installer hash | open PR from `pin-bot` weekly cron |
+| Update PAI installer hash | run the `pin-bot` workflow manually (`workflow_dispatch`), then merge its PR after CODEOWNERS review |
 | Encrypted backups (opt-in) | see [`extras/backup/README.md`](../extras/backup/README.md) |
 
 ---

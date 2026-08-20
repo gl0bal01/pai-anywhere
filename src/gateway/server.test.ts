@@ -44,6 +44,7 @@ beforeAll(() => {
     cookieSecure: false,
     sessionTtlSeconds: 3600,
     pulseOrigin: `http://127.0.0.1:${mockPulse.port}`,
+    tailnetIdentityRequired: false,
   };
   secrets = loadOrCreateGatewaySecrets(tmpDir);
   clearFailedPairing();
@@ -73,9 +74,10 @@ describe("/__gateway/healthz", () => {
       secrets,
     );
     expect(res.status).toBe(200);
-    const body = await res.json() as { ok: boolean; service: string };
+    // (L1) liveness only — no service name fingerprint.
+    const body = await res.json() as { ok: boolean };
     expect(body.ok).toBe(true);
-    expect(body.service).toBe("pai-anywhere-gateway");
+    expect((body as Record<string, unknown>).service).toBeUndefined();
   });
 
   test("anonymous /__gateway/anything is not exposed (401)", async () => {
@@ -466,5 +468,273 @@ describe("response security headers", () => {
       secrets,
     );
     expect(res.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
+  });
+});
+
+// ── M1: tailnet identity binding ──────────────────────────────────────────────
+describe("tailnet identity binding (M1)", () => {
+  const idConfig = (): GatewayConfig => ({ ...config, tailnetIdentityRequired: true });
+
+  test("pairing without an identity header is refused when required", async () => {
+    clearFailedPairing();
+    const res = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/pair", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: config.pairingCode }),
+      }),
+      idConfig(),
+      secrets,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("pairing with an identity header succeeds and binds the session", async () => {
+    clearFailedPairing();
+    const res = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/pair", {
+        method: "POST",
+        headers: { "content-type": "application/json", "Tailscale-User-Login": "alice@example.com" },
+        body: JSON.stringify({ code: config.pairingCode }),
+      }),
+      idConfig(),
+      secrets,
+    );
+    expect(res.status).toBe(200);
+    const cookie = res.headers.get("set-cookie")!;
+    expect(cookie).toContain("pai_anywhere_session=");
+
+    const status = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/status", {
+        headers: { "cookie": cookie.split(";")[0]!, "Tailscale-User-Login": "alice@example.com" },
+      }),
+      idConfig(),
+      secrets,
+    );
+    expect((await status.json() as { authenticated: boolean }).authenticated).toBe(true);
+
+    const wrongIdentity = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/status", {
+        headers: { "cookie": cookie.split(";")[0]!, "Tailscale-User-Login": "mallory@example.com" },
+      }),
+      idConfig(),
+      secrets,
+    );
+    expect((await wrongIdentity.json() as { authenticated: boolean }).authenticated).toBe(false);
+
+    const noIdentity = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/status", {
+        headers: { "cookie": cookie.split(";")[0]! },
+      }),
+      idConfig(),
+      secrets,
+    );
+    expect((await noIdentity.json() as { authenticated: boolean }).authenticated).toBe(false);
+  });
+});
+
+// ── L3: cross-origin guard ────────────────────────────────────────────────────
+describe("cross-origin guard (L3)", () => {
+  test("pairing with a foreign Origin is rejected 403", async () => {
+    clearFailedPairing();
+    const res = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/pair", {
+        method: "POST",
+        headers: { "content-type": "application/json", "origin": "https://evil.example" },
+        body: JSON.stringify({ code: config.pairingCode }),
+      }),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("https Origin behind Tailscale Serve is accepted despite the http request URL", async () => {
+    // Regression: Serve terminates TLS and forwards plaintext to loopback, so
+    // the browser's `Origin: https://host` never matches the scheme of the
+    // rebuilt `http://host` request URL. Comparing full origins 403'd every
+    // real browser pairing; only the host is meaningful here.
+    clearFailedPairing();
+    const res = await handleGatewayRequest(
+      new Request("http://pai.example.ts.net/auth/pair", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "origin": "https://pai.example.ts.net",
+        },
+        body: JSON.stringify({ code: config.pairingCode }),
+      }),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("https Origin on a non-443 Serve port keeps its port in the comparison", async () => {
+    clearFailedPairing();
+    const ok = await handleGatewayRequest(
+      new Request("http://pai.example.ts.net:10000/auth/pair", {
+        method: "POST",
+        headers: { "content-type": "application/json", "origin": "https://pai.example.ts.net:10000" },
+        body: JSON.stringify({ code: config.pairingCode }),
+      }),
+      config,
+      secrets,
+    );
+    expect(ok.status).toBe(200);
+
+    clearFailedPairing();
+    const wrongPort = await handleGatewayRequest(
+      new Request("http://pai.example.ts.net:10000/auth/pair", {
+        method: "POST",
+        headers: { "content-type": "application/json", "origin": "https://pai.example.ts.net:9999" },
+        body: JSON.stringify({ code: config.pairingCode }),
+      }),
+      config,
+      secrets,
+    );
+    expect(wrongPort.status).toBe(403);
+  });
+
+  test("logout with Sec-Fetch-Site: same-site is rejected 403", async () => {
+    // Another host on the same tailnet shares the `<tailnet>.ts.net`
+    // registrable domain, so `same-site` is not proof of same-origin.
+    const res = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/logout", {
+        method: "POST",
+        headers: { "sec-fetch-site": "same-site" },
+      }),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(403);
+  });
+
+  test("logout with Sec-Fetch-Site: same-origin is allowed", async () => {
+    const res = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/logout", {
+        method: "POST",
+        headers: { "sec-fetch-site": "same-origin" },
+      }),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(200);
+  });
+
+  test("logout with Sec-Fetch-Site: cross-site is rejected 403", async () => {
+    const res = await handleGatewayRequest(
+      new Request("http://127.0.0.1/auth/logout", {
+        method: "POST",
+        headers: { "sec-fetch-site": "cross-site" },
+      }),
+      config,
+      secrets,
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+// ── M5: proxy hardening ───────────────────────────────────────────────────────
+describe("proxy hardening (M5)", () => {
+  test("hop-by-hop and credential headers are stripped before the upstream", async () => {
+    let seen: Headers | null = null;
+    const probe = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: (req) => { seen = req.headers; return new Response("ok"); },
+    });
+    try {
+      const cfg: GatewayConfig = { ...config, pulseOrigin: `http://127.0.0.1:${probe.port}` };
+      const res = await handleGatewayRequest(
+        authedReq("http://127.0.0.1/", {
+          method: "POST",
+          headers: {
+            "authorization": "Bearer secret-token",
+            "connection": "keep-alive",
+            "te": "trailers",
+            "upgrade": "h2c",
+            "proxy-authorization": "Basic xyz",
+          },
+          body: "hello",
+        }),
+        cfg,
+        secrets,
+      );
+      expect(res.status).toBe(200);
+      // `connection`/`keep-alive` are hop-by-hop and re-added by Bun's own HTTP
+      // client on the wire, so they cannot be asserted at the receiver; the
+      // gateway-side deletion is what matters (authorization etc. below).
+      expect(seen!.get("authorization")).toBeNull();
+      expect(seen!.get("te")).toBeNull();
+      expect(seen!.get("upgrade")).toBeNull();
+      expect(seen!.get("proxy-authorization")).toBeNull();
+      expect(seen!.get("cookie")).toBeNull();
+    } finally {
+      probe.stop();
+    }
+  });
+
+  test("chunked oversize upstream body (no Content-Length) errors the stream", async () => {
+    // Regression: the cap used to be enforced by `arrayBuffer()`, which meant a
+    // response with no Content-Length was fully buffered into memory BEFORE the
+    // size check could run (and never terminated at all for a live stream).
+    const chunk = new Uint8Array(4 * 1024 * 1024);
+    const probe = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => new Response(new ReadableStream<Uint8Array>({
+        // 9 x 4 MiB = 36 MiB > 32 MiB cap, streamed with no Content-Length.
+        start(controller) {
+          for (let i = 0; i < 9; i++) controller.enqueue(chunk);
+          controller.close();
+        },
+      })),
+    });
+    try {
+      const cfg: GatewayConfig = { ...config, pulseOrigin: `http://127.0.0.1:${probe.port}` };
+      const res = await handleGatewayRequest(authedReq("http://127.0.0.1/"), cfg, secrets);
+      // Headers are already on the wire, so the ceiling shows up as an aborted
+      // body rather than a 502 — the point is that it aborts at all.
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-length")).toBeNull();
+      await expect(res.arrayBuffer()).rejects.toThrow();
+    } finally {
+      probe.stop();
+    }
+  });
+
+  test("streamed under-cap body passes through intact", async () => {
+    const probe = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: one\n\n"));
+          controller.enqueue(new TextEncoder().encode("data: two\n\n"));
+          controller.close();
+        },
+      })),
+    });
+    try {
+      const cfg: GatewayConfig = { ...config, pulseOrigin: `http://127.0.0.1:${probe.port}` };
+      const res = await handleGatewayRequest(authedReq("http://127.0.0.1/"), cfg, secrets);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("data: one\n\ndata: two\n\n");
+    } finally {
+      probe.stop();
+    }
+  });
+
+  test("declared oversize upstream body is 502", async () => {
+    const bigBody = Buffer.alloc(33 * 1024 * 1024, 1); // 33 MiB > 32 MiB cap
+    const probe = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: () => new Response(bigBody, { status: 200 }),
+    });
+    try {
+      const cfg: GatewayConfig = { ...config, pulseOrigin: `http://127.0.0.1:${probe.port}` };
+      const res = await handleGatewayRequest(authedReq("http://127.0.0.1/"), cfg, secrets);
+      expect(res.status).toBe(502);
+    } finally {
+      probe.stop();
+    }
   });
 });

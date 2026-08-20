@@ -1,6 +1,12 @@
 #!/bin/bash
 # Encrypted backup of pai-anywhere state.
 # Restore: age -d -i <identity.txt> < <FILE>.tar.age | tar -xzf - -C /
+# (M3) Live secrets are EXCLUDED from the archive: gateway.env (pairing code),
+# gateway-secrets.json (session HMAC secret), pairing-code.txt and
+# rate-limit.json. They are re-derivable via `pai-anywhere reset-access`, which
+# MUST be run after restoring a backup on any host — the restored instance
+# otherwise shares credentials with the source instance's cookies/offsite
+# copies that predate this exclusion.
 set -euo pipefail
 
 BACKUP_DIR="/var/backups/pai-anywhere"
@@ -8,7 +14,16 @@ RECIPIENT_FILE="/root/.config/pai-backup/recipient.pub"
 RETENTION_DAYS=14
 OFFSITE_ENV="/etc/pai-anywhere/backup-offsite.env"
 
-mkdir -p "$BACKUP_DIR"
+# The unit runs under ProtectSystem=strict, which makes /var read-only apart
+# from ReadWritePaths. That covers $BACKUP_DIR itself but not its parent, so the
+# directory has to exist before the first run (extras/backup/README.md step 3).
+if [[ ! -d "$BACKUP_DIR" ]]; then
+  if ! mkdir -p "$BACKUP_DIR" 2>/dev/null; then
+    echo "ERROR: $BACKUP_DIR does not exist and cannot be created here." >&2
+    echo "       Create it once:  sudo install -d -m 0700 $BACKUP_DIR" >&2
+    exit 1
+  fi
+fi
 chmod 700 "$BACKUP_DIR"
 
 if [[ ! -f "$RECIPIENT_FILE" ]]; then
@@ -28,6 +43,10 @@ tar -czf - \
   --exclude='*.log' \
   --exclude='.npm' \
   --exclude='.bun/install/cache' \
+  --exclude='etc/pai-anywhere/gateway.env' \
+  --exclude='var/lib/pai-anywhere/pairing-code.txt' \
+  --exclude='var/lib/pai-anywhere/gateway-secrets.json' \
+  --exclude='var/lib/pai-anywhere/rate-limit.json' \
   -C / \
   home/pai/.claude \
   etc/pai-anywhere \
@@ -59,8 +78,41 @@ if [[ -f "$OFFSITE_ENV" ]]; then
     600|400) ;;
     *) echo "ERROR: $OFFSITE_ENV must be mode 0600 or 0400 (no group/other access); got ${_mode}." >&2; exit 1 ;;
   esac
+  # (L8) The env file's PARENT must also be sane: a group/world-writable (or
+  # non-root-owned) directory lets an attacker replace the checked-but-clean
+  # file after the check (or plant one that passes it).
+  _parent="$(dirname "$OFFSITE_ENV")"
+  if [[ ! -d "$_parent" ]] || [[ -L "$_parent" ]]; then
+    echo "ERROR: parent directory of $OFFSITE_ENV must be a real directory." >&2; exit 1
+  fi
+  _pown="$(stat -c '%U' "$_parent" 2>/dev/null || echo unknown)"
+  if [[ "$_pown" != "root" ]]; then
+    echo "ERROR: parent of $OFFSITE_ENV must be root-owned; got ${_pown}." >&2; exit 1
+  fi
+  # `-perm /022` = "any of group-write / other-write set". Do NOT write this as
+  # a symbolic mode like `/g-w`: find parses that to 0000, and GNU `-perm /000`
+  # matches EVERY file, so the guard would reject every parent directory.
+  if [[ -n "$(find "$_parent" -maxdepth 0 -perm /022 2>/dev/null)" ]]; then
+    echo "ERROR: parent of $OFFSITE_ENV must not be group/world-writable." >&2; exit 1
+  fi
   # shellcheck disable=SC1090
   source "$OFFSITE_ENV"
+  # (L8) Same discipline for the rclone config it points at, if any (checked
+  # AFTER sourcing — that is where the variable is defined).
+  if [[ -n "${RCLONE_CONFIG:-}" ]]; then
+    if [[ -L "$RCLONE_CONFIG" ]]; then
+      echo "ERROR: RCLONE_CONFIG $RCLONE_CONFIG is a symlink — refusing." >&2; exit 1
+    fi
+    _rc_own="$(stat -c '%u' "$RCLONE_CONFIG" 2>/dev/null || echo -1)"
+    _rc_mode="$(stat -c '%a' "$RCLONE_CONFIG" 2>/dev/null || echo 777)"
+    if [[ "$_rc_own" != "0" ]]; then
+      echo "ERROR: RCLONE_CONFIG must be owned by root (uid 0); got uid ${_rc_own}." >&2; exit 1
+    fi
+    case "$_rc_mode" in
+      600|400) ;;
+      *) echo "ERROR: RCLONE_CONFIG must be mode 0600 or 0400; got ${_rc_mode}." >&2; exit 1 ;;
+    esac
+  fi
   if [[ -n "${REMOTE:-}" ]]; then
     if rclone copy "$OUT" "$REMOTE" --no-traverse 2>>/var/log/pai-backup-offsite.log; then
       OFFSITE_STATUS="pushed_to_${REMOTE}"

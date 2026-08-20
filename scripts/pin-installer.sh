@@ -8,7 +8,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_SH="${SCRIPT_DIR}/../install.sh"
 
-PAI_INSTALLER_URL="https://ourpai.ai/install.sh"
+# Single source of truth: hash EXACTLY what install.sh downloads. Deriving the
+# URL from install.sh (instead of duplicating a constant here) guarantees the
+# pin-bot can never certify content from a different origin than the one the
+# installer actually fetches — a mismatch between the two previously went
+# unnoticed (ourpai.ai here vs ourlifeos.ai in install.sh).
+PAI_INSTALLER_URL="$(grep '^PAI_INSTALLER_URL=' "${INSTALL_SH}" | head -1 | cut -d'"' -f2)"
+if [[ -z "${PAI_INSTALLER_URL}" ]]; then
+  echo "[pin] ERROR: could not read PAI_INSTALLER_URL from ${INSTALL_SH}" >&2
+  exit 1
+fi
 
 # Read current Bun version from install.sh
 BUN_VERSION="${BUN_VERSION:-$(grep '^BUN_VERSION=' "${INSTALL_SH}" | head -1 | cut -d'"' -f2)}"

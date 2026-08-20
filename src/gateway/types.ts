@@ -6,6 +6,8 @@ export type GatewayConfig = {
   cookieSecure: boolean;
   sessionTtlSeconds: number;
   pulseOrigin: string;
+  /** (M1) Require requests to carry the Tailscale-User-Login they paired with. */
+  tailnetIdentityRequired: boolean;
 };
 
 export type GatewaySecrets = {
@@ -19,4 +21,6 @@ export type SessionPayload = {
   iat: number;
   exp: number;
   nonce: string;
+  /** (M1) sha256 hex of the pairing client's Tailscale-User-Login, when bound. */
+  sub?: string;
 };

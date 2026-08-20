@@ -12,6 +12,7 @@ import {
   initRateLimiter,
   isAuthenticated,
   loadOrCreateGatewaySecrets,
+  pairingCodeMatches,
   recordFailedPairing,
   resetRateLimiterForTests,
 } from "./auth";
@@ -32,6 +33,7 @@ function makeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     cookieSecure: false,
     sessionTtlSeconds: 3600,
     pulseOrigin: "http://127.0.0.1:1",
+    tailnetIdentityRequired: false,
     ...overrides,
   };
 }
@@ -279,5 +281,41 @@ describe("cookie segment validation", () => {
       headers: { cookie: `${SESSION_COOKIE}=onlyonesegment` },
     });
     expect(isAuthenticated(req, secrets)).toBe(false);
+  });
+});
+
+// ── M2: per-source rate limiting ──────────────────────────────────────────────
+describe("per-source rate limiting (M2)", () => {
+  test("two sources have independent buckets", () => {
+    resetRateLimiterForTests();
+    for (let i = 0; i < 10; i++) recordFailedPairing("id:alice");
+    expect(canAttemptPairing("id:alice")).toBe(false);
+    expect(canAttemptPairing("id:bob")).toBe(true);
+    clearFailedPairing("id:alice");
+  });
+
+  test("v1 single-bucket file migrates into the global bucket", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pai-rl-v1-"));
+    try {
+      writeFileSync(join(dir, "rate-limit.json"), JSON.stringify({
+        count: 10, resetAt: Date.now() + 60_000,
+      }));
+      initRateLimiter(dir);
+      expect(canAttemptPairing("global")).toBe(false);
+      expect(canAttemptPairing("id:someone-else")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    resetRateLimiterForTests();
+  });
+});
+
+// ── L2: constant-time pairing compare ────────────────────────────────────────
+describe("pairingCodeMatches (L2)", () => {
+  test("accepts exact match, rejects any mismatch regardless of length", () => {
+    expect(pairingCodeMatches("AAAAAAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAA")).toBe(true);
+    expect(pairingCodeMatches("AAAAAAAAAAAAAAAAAAAA", "AAAAAAAAAAAAAAAAAAAB")).toBe(false);
+    expect(pairingCodeMatches("", "AAAAAAAAAAAAAAAAAAAA")).toBe(false);
+    expect(pairingCodeMatches("short", "a-much-longer-expected-value")).toBe(false);
   });
 });

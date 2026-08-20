@@ -106,11 +106,11 @@ Pulse on mobile (`https://<host>.<tailnet>.ts.net`) shows what PAI did, when, an
 | User | Dedicated `pai` system user. Password locked. Cannot login. |
 | Filesystem | Pulse + Gateway run with systemd `ProtectHome=read-only`. |
 | Pulse | Bound to `127.0.0.1:31337`. Never directly internet-exposed. |
-| Gateway | HMAC-signed cookies + 20-char base64url pairing code (≥120 bits entropy). |
+| Gateway | HMAC-signed cookies + 20-char base64url pairing code (≥120 bits entropy). Session cookie bound to the pairing client's tailnet identity; per-source pairing rate limit (10/15min). |
 | Secrets | Pairing code stored mode 0600. Never logged. |
 | Install | Every change recorded in `/etc/pai-anywhere/install-manifest.jsonl`. Reversible. |
-| Upstream | PAI installer + Bun pinned by SHA-256. Mismatch = abort. |
-| Backups | Optional age-encrypted daily snapshots (see [extras/backup/](./extras/backup/)). Operator-supplied; not auto-installed. |
+| Upstream | PAI installer + Bun pinned by SHA-256. Mismatch = abort. Pin bumps are manual pin-bot dispatch + CODEOWNERS review. |
+| Backups | Optional age-encrypted daily snapshots (see [extras/backup/](./extras/backup/)). Operator-supplied; not auto-installed. Live secrets excluded; `reset-access` required post-restore. |
 
 ---
 

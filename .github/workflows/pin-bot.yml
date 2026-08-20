@@ -1,9 +1,9 @@
 name: pin-bot
 
 on:
-  schedule:
-    # Every Monday at 12:00 UTC
-    - cron: '0 12 * * 1'
+  # (H1) Manual dispatch ONLY: pin bumps are deliberate acts. Weekly auto-PRs
+  # made "fresh hash merged" routine, eroding the review the pin exists for.
+  # PRs carry the pin-bot label; branch protection requires a second reviewer.
   workflow_dispatch: {}
 
 permissions:
@@ -33,8 +33,10 @@ jobs:
         id: upstream_diff
         if: steps.diff.outputs.changed == 'true'
         run: |
-          # Capture first 100 lines of the current upstream installer for context.
-          upstream_preview="$(curl -fsSL https://ourpai.ai/install.sh | head -100 || echo 'Failed to fetch')"
+          # (H1) Preview must show EXACTLY what install.sh pins: derive the URL
+          # from install.sh so preview and pin can never diverge by origin.
+          PAI_URL="$(grep '^PAI_INSTALLER_URL=' install.sh | head -1 | cut -d'"' -f2)"
+          upstream_preview="$(curl -fsSL "${PAI_URL}" | head -100 || echo 'Failed to fetch')"
           # Build the FULL PR body here (shell DOES interpolate the preview) and
           # pass it via body-path below. A literal `body:` block never expands
           # $(...) — the preview would otherwise show up as the literal command.

@@ -21,9 +21,20 @@ export function run(cmd: string[], ms = 10_000): { code: number | null; out: str
 // uses bash syntax under dash, making `command -v` never run and every dep look
 // missing. Run a plain shell and search a PATH augmented with the standard
 // admin directories so probes find binaries regardless of the caller's account.
-const PROBE_PATH = `${process.env.PATH ?? ""}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
+// (L5) System directories come FIRST and the caller's PATH last: the caller's
+// environment is not fully trusted (a hostile PAI_* env on the service could
+// otherwise shadow `ss`/`systemctl` with attacker-controlled copies), while
+// custom installs can still be found via the trailing PATH.
+const PROBE_PATH = `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${process.env.PATH ? `:${process.env.PATH}` : ""}`;
 
 export function cmdExists(name: string): boolean {
+  // (L4) This helper interpolates `name` into a shell command. The historical
+  // invariant — "only hardcoded literals are ever passed" — is now enforced,
+  // not just documented: anything outside [A-Za-z0-9_.-] throws instead of
+  // silently constructing an injectable command.
+  if (!/^[A-Za-z0-9_.-]+$/.test(name)) {
+    throw new Error(`cmdExists: refusing non-literal binary name: ${JSON.stringify(name)}`);
+  }
   return spawnSync("sh", ["-c", `command -v '${name.replaceAll("'", "'\\''")}' >/dev/null 2>&1`],
     { timeout: 2_000, env: { ...process.env, PATH: PROBE_PATH } }).status === 0;
 }

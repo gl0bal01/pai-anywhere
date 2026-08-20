@@ -54,6 +54,10 @@ sudo chmod 644 /root/.config/pai-backup/recipient.pub
 From this directory:
 
 ```bash
+# ProtectSystem=strict makes /var read-only apart from ReadWritePaths, so the
+# backup directory must be created up front — the unit cannot create it itself.
+sudo install -d -m 0700 /var/backups/pai-anywhere
+
 sudo install -m 0755 pai-backup /usr/local/sbin/pai-backup
 sudo install -m 0644 pai-backup.service /etc/systemd/system/pai-backup.service
 sudo install -m 0644 pai-backup.timer   /etc/systemd/system/pai-backup.timer
@@ -156,6 +160,8 @@ sudo age -d -i <path-to-identity.txt> < /tmp/pai-<stamp>.tar.age \
 ```
 
 Restoring overwrites `/home/pai/.claude`, `/etc/pai-anywhere`, and `/var/lib/pai-anywhere`. After restore, run `sudo systemctl restart pai-anywhere.service pai-pulse.service`.
+
+**Mandatory after restore:** run `sudo pai-anywhere reset-access`. Live secrets (pairing code, session HMAC secret, rate-limit state) are excluded from backups (M3) — the restored instance generates fresh ones via reset-access, and the old cookies/codes are dead anyway. Re-pair your client with the new code.
 
 ## Key rotation
 

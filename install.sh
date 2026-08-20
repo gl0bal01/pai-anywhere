@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # pai-anywhere install.sh — bootstrap a private PAI host on Ubuntu/Debian.
-# Usage:  curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.2.4/install.sh | bash
+# Usage:  curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.2.4/install.sh | sudo bash
 # Docs:   docs/QUICKSTART.md
 # Threat model: docs/THREAT_MODEL.md
 set -eEuo pipefail
 
 # ── pinned constants ──────────────────────────────────────────────────────────
 PAI_INSTALLER_URL="https://ourlifeos.ai/install.sh"
+# (H1) Trust chain for this download: the CONTENT is pinned by the SHA-256
+# below, so a compromise of ourlifeos.ai alone cannot change what runs — only a
+# pin change can, and pins change exclusively via manual pin-bot dispatch whose
+# PRs require CODEOWNERS review (branch protection: second approver). Keep this
+# contract intact when touching the URL, the hash, or .github/workflows/pin-bot.yml.
 PAI_INSTALLER_SHA256="671db9c53cb6a700bf17790ce3d571feca7a6bf15bbf6d8caba0ed4b3d39e709"
 BUN_VERSION="1.3.13"
 BUN_SHA256_X86_64="79c0771fa8b92c33aae41e15a0e0d307ea99d0e2f00317c71c6c53237a78e25a"
@@ -406,6 +411,14 @@ pai_post_bootstrap_fixes() {
   # setup" but never actually runs the install. Install it for the pai user.
   if ! runuser -u "${PAI_USER}" -- bash -lc 'command -v claude' &>/dev/null; then
     info "Installing Claude Code CLI ${CLAUDE_CODE_VERSION} for ${PAI_USER} (upstream installer skipped this) …"
+    # (L7) Registry trust note: version-pinned from npm; tarball integrity
+    # relies on the npm registry (accepted risk, standard practice — no
+    # lockfile hash pinning for global installs).
+    #
+    # Keep this comment ABOVE the command: a comment placed between a `\`
+    # line-continuation and its argument silently truncates the command
+    # (`bash -lc` then runs with no script and the quoted string is executed
+    # as a filename), which aborts the whole install under `set -e`.
     runuser -u "${PAI_USER}" -- bash -lc \
       "export PATH=${PAI_HOME}/.bun/bin:\$PATH; bun add -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
     record "file" "${PAI_HOME}/.bun/bin/claude" "create"
@@ -608,6 +621,7 @@ Environment=PAI_ANYWHERE_GATEWAY_PORT=${GATEWAY_PORT}
 Environment=PAI_ANYWHERE_COOKIE_SECURE=1
 Environment=PAI_ANYWHERE_SESSION_TTL_SECONDS=${SESSION_TTL}
 Environment=PAI_ANYWHERE_PULSE_ORIGIN=http://127.0.0.1:31337
+Environment=PAI_ANYWHERE_REQUIRE_TAILNET_IDENTITY=1
 EnvironmentFile=${CFG_DIR}/gateway.env
 WorkingDirectory=${APP_DIR}
 ExecStart=${BUN_BIN} run ${APP_DIR}/src/cli.ts gateway --port ${GATEWAY_PORT}

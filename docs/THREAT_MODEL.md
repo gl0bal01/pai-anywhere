@@ -191,7 +191,7 @@ Each threat row maps to the file/lines that mitigate it.
 |---|---|
 | Public Pulse exposure | `install.sh` `tailscale_serve_private()`; `install.sh` `write_systemd_units()` sets `Environment=PAI_PULSE_BIND_ALL=0` in pai-pulse.service; `src/doctor/probes.ts` pulse_loopback probe |
 | Public terminal exposure | `src/gateway/server.ts` `/terminal` returns 410; loopback bind enforced in `startGateway()` `isLoopbackHost()` |
-| Stolen tailnet device | `src/gateway/auth.ts` HMAC-signed cookie + base64url pairing code; rate limit `canAttemptPairing()` 10/15min global |
+| Stolen tailnet device | `src/gateway/auth.ts` HMAC-signed cookie + base64url pairing code; session cookie bound to pairing client's `Tailscale-User-Login` (M1, `PAI_ANYWHERE_REQUIRE_TAILNET_IDENTITY=1` in the unit); per-source rate limit `canAttemptPairing(sourceKey)` 10/15min (`rate-limit.v2` buckets, v1 migrated) |
 | Existing `~/.claude` clobber | `install.sh` `run_pai_as_pai()` runs upstream installer as `pai` user; `tests/preserve-claude.sh` snapshot diff |
 | SSH lockout | `install.sh` does not modify `/etc/ssh/sshd_config` in v0.1 baseline; `docs/HARDENING.md` documents drop-in pattern |
 | Secret leakage in logs | `install.sh` writes pairing code only to `/var/lib/pai-anywhere/pairing-code.txt` (0600); never echoed; `tests/pairing-code-leak.sh` enforces |
@@ -202,7 +202,8 @@ Each threat row maps to the file/lines that mitigate it.
 | Runtime adapter secret sprawl | not in v0.1 scope |
 | Rollback damage | `uninstall.sh` allowlist + JSONL manifest at `/etc/pai-anywhere/install-manifest.jsonl`; `tests/uninstall-safety.sh` |
 | App bundle overwrite | `install.sh` `install_gateway_app()` refuses unowned `/opt/pai-anywhere`; preflight check |
-| Upstream installer compromise | `install.sh` `fetch_and_verify_pai()` SHA-256 verifies against pinned hash; `scripts/pin-installer.sh` + `.github/workflows/pin-bot.yml` weekly PR; `.github/CODEOWNERS` requires review |
+| Upstream installer compromise | `install.sh` `fetch_and_verify_pai()` SHA-256 verifies against pinned hash; `scripts/pin-installer.sh` derives the pinned URL from `install.sh` (preview in `.github/workflows/pin-bot.yml` too) so pin and download can never diverge by origin; pin-bot is manual-dispatch only and PRs require CODEOWNERS review |
+| Backup secret exfiltration | `extras/backup/pai-backup` excludes `gateway.env`, `pairing-code.txt`, `gateway-secrets.json`, `rate-limit.json` from archives (M3); restore docs mandate `pai-anywhere reset-access` post-restore |
 | Pulse path drift | `src/gateway/server.ts proxyPulse()` proxies all paths to Pulse on `127.0.0.1:31337` (Pulse owns its routing); rejects `/__gateway/*` + path-traversal; method allowlist (`GET`/`POST`/`HEAD`); 1MB body cap |
 | Bash idempotency drift | `set -euo pipefail` + `if-not-already-X` gates per function in `install.sh`; `.github/workflows/shellcheck.yml` CI gate |
 | Bun supply chain | `install.sh` `install_bun_for_pai()` SHA-256 verifies tarball by arch against `BUN_SHA256_X86_64`/`BUN_SHA256_ARM64` constants |

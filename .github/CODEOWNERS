@@ -9,3 +9,6 @@
 # install.sh changes (including hash bumps) require explicit review
 install.sh @gl0bal01
 scripts/pin-installer.sh @gl0bal01
+# (H1) The pin pipeline itself is supply-chain-critical: changing it can weaken
+# what the pins vouch for. Same reviewer requirement.
+.github/workflows/pin-bot.yml @gl0bal01

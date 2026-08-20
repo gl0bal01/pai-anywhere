@@ -143,6 +143,15 @@ export function resetAccess(): number {
     console.error(`Warning: could not chown ${secretsFile} to ${user}; the gateway may fail to read it.`);
   }
 
+  // (M2) Clear the persisted per-source pairing rate limiter: reset-access is
+  // the documented lockout-recovery path, so a saturated bucket must not
+  // survive a deliberate rotation.
+  try {
+    unlinkSync(join(state, "rate-limit.json"));
+  } catch {
+    /* absent already — fine */
+  }
+
   // Restart gateway service if active so new secrets take effect immediately.
   // (T2) If the restart fails the secrets ARE already rotated (old cookies dead)
   // but the running gateway still holds the old in-memory secret, so surface it

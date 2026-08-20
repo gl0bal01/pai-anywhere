@@ -8,3 +8,21 @@ ExecStart=/usr/local/sbin/pai-backup
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
+# (M4) Sandbox like the gateway/pulse units: the backup only needs to read
+# /home/pai, /etc/pai-anywhere, /root/.config/pai-backup, /var/lib/pai-anywhere
+# and write /var/backups/pai-anywhere + the offsite log.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# `-` prefix: a missing backup directory must not fail the unit with an opaque
+# namespace error — the script reports it with the exact command to fix it.
+ReadWritePaths=-/var/backups/pai-anywhere /var/log
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true

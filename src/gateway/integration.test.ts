@@ -32,7 +32,8 @@ describe("reset-access: rotating secrets invalidates existing session cookies", 
       pairingCode,
       cookieSecure: false,
       sessionTtlSeconds: 3600,
-      pulseOrigin: "http://127.0.0.1:1", // nothing listening; only auth flow tested here
+      pulseOrigin: "http://127.0.0.1:1",
+    tailnetIdentityRequired: false, // nothing listening; only auth flow tested here
     };
 
     // ── Step 1: start first gateway and pair ───────────────────────────────────
