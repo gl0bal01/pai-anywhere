@@ -61,6 +61,14 @@ Add a grant block — replace the placeholders with your real identities:
 
 Tailscale Serve listens on tailnet port 443 (the `https://<host>.<tailnet>.ts.net` URL), so `"ip": ["443"]` is what you want. If you also want SSH, add `"22"`. Keep the `dst` narrowed to the tag, not `*`.
 
+**If the host already runs something on 443** (Traefik, nginx, Caddy), the installer will not take the port — Serve intercepts tailnet traffic inside tailscaled before iptables, which would black-hole that service for every tailnet client while it still answers locally. Install falls back to **10000** and prints the URL with the port. Grant `"ip": ["10000"]` instead, or pin your own port up front:
+
+```bash
+PAI_ANYWHERE_SERVE_PORT=8443 bash install.sh
+```
+
+A pinned port is never auto-changed: if it is occupied, the install stops and tells you.
+
 ### 3. (Optional) Lock SSH to your own identity
 
 ```hujson

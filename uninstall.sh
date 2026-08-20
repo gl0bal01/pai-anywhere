@@ -201,6 +201,17 @@ remove_tailscale_serve() {
   # Our route present?
   echo "${serve_status}" | grep -q "127.0.0.1:${GATEWAY_PORT}" || return 0
 
+  # Which HTTPS port fronts our gateway? Install auto-selects a fallback when
+  # 443 is already owned by another service, so it is not safe to assume 443.
+  local serve_port
+  serve_port="$(tailscale serve status --json 2>/dev/null \
+    | jq -r --arg backend "http://127.0.0.1:${GATEWAY_PORT}" '
+        (.Web // {}) | to_entries[]
+        | select([.value.Handlers[]?.Proxy] | index($backend))
+        | .key | split(":") | last
+      ' 2>/dev/null | head -n1)"
+  serve_port="${serve_port:-443}"
+
   # Any OTHER loopback backend on a different port?
   local other
   other="$(echo "${serve_status}" | grep -oE '127\.0\.0\.1:[0-9]+' \
@@ -208,8 +219,9 @@ remove_tailscale_serve() {
   if [[ -n "${other}" ]]; then
     warn "Tailscale Serve has other loopback routes: $(echo "${other}" | tr '\n' ' ')"
     warn "Refusing global 'tailscale serve reset' to avoid wiping unrelated services."
-    warn "Remove only the pai-anywhere route manually, e.g.:"
-    warn "  tailscale serve --https=443 off    # the handler fronting 127.0.0.1:${GATEWAY_PORT}"
+    warn "Removing only the pai-anywhere route on port ${serve_port} …"
+    tailscale serve --https="${serve_port}" off 2>/dev/null \
+      || warn "  Manual cleanup: tailscale serve --https=${serve_port} off"
     return 0
   fi
 

@@ -34,6 +34,7 @@ shell-tests-local:
 	bash tests/log-format.sh
 	bash tests/pairing-code-leak.sh
 	bash tests/reset-access-non-root.sh
+	bash tests/serve-port-conflict.sh
 	bash tests/sha256-mismatch.sh
 
 check: deps typecheck test lint shell-tests-local

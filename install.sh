@@ -19,6 +19,11 @@ TAILSCALE_KEY_FINGERPRINT="2596A99EAAB33821893C0A79458CA832957F5868"
 # ── runtime config ────────────────────────────────────────────────────────────
 GATEWAY_PORT="${PAI_ANYWHERE_GATEWAY_PORT:-8787}"
 SESSION_TTL="${PAI_ANYWHERE_SESSION_TTL_SECONDS:-86400}"
+# Tailnet HTTPS port for Serve. Empty ⇒ auto-select: prefer 443, fall back when
+# another service (Traefik/nginx/Caddy/…) already owns it on this host. Set
+# PAI_ANYWHERE_SERVE_PORT to pin a port explicitly and disable the fallback.
+SERVE_PORT="${PAI_ANYWHERE_SERVE_PORT:-}"
+SERVE_PORT_FALLBACK="${PAI_ANYWHERE_SERVE_PORT_FALLBACK:-10000}"
 PAI_USER="pai"
 PAI_HOME="/home/pai"
 APP_DIR="/opt/pai-anywhere"
@@ -697,6 +702,40 @@ tailscale_up_if_needed() {
   phase_ok "tailscale-up"
 }
 
+# True when some OTHER process already owns ${1} on this host.
+#
+# `tailscale serve status` cannot answer this: it only knows about Serve's own
+# handlers and is blind to a reverse proxy (Traefik, nginx, Caddy) sitting on
+# the same port. Claiming 443 anyway is not a merely cosmetic clash — Serve
+# intercepts peer traffic to the tailnet IP inside tailscaled, *before* any
+# iptables/DNAT rule runs, so the pre-existing service keeps answering on the
+# host and on public interfaces while silently black-holing every tailnet
+# client. Probe the host directly instead.
+host_port_in_use() {
+  local port="$1"
+  if command -v ss &>/dev/null; then
+    [[ -n "$(ss -Hltn "sport = :${port}" 2>/dev/null)" ]] && return 0
+  elif command -v netstat &>/dev/null; then
+    netstat -ltn 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" && return 0
+  fi
+  # Docker publishes ports through DNAT; with the userland proxy disabled there
+  # is no host listener socket for `ss` to find, only an iptables rule.
+  if command -v docker &>/dev/null; then
+    docker ps --format '{{.Ports}}' 2>/dev/null | grep -qE "(^|, )[0-9a-f.:\[\]]*:${port}->" && return 0
+  fi
+  return 1
+}
+
+# Echo the Serve HTTPS port already fronting our gateway, or nothing.
+serve_port_for_gateway() {
+  tailscale serve status --json 2>/dev/null \
+    | jq -r --arg backend "http://127.0.0.1:${GATEWAY_PORT}" '
+        (.Web // {}) | to_entries[]
+        | select([.value.Handlers[]?.Proxy] | index($backend))
+        | .key | split(":") | last
+      ' 2>/dev/null | head -n1
+}
+
 tailscale_serve_private() {
   phase "tailscale-serve"
 
@@ -709,24 +748,54 @@ tailscale_serve_private() {
     exit 1
   fi
 
-  # Check if Serve is already configured for our port
-  if echo "${serve_status}" | grep -q "127.0.0.1:${GATEWAY_PORT}"; then
-    info "Tailscale Serve already configured for port ${GATEWAY_PORT}."
+  # Idempotent: our route already exists, whatever port it landed on.
+  local existing
+  existing="$(serve_port_for_gateway)"
+  if [[ -n "${existing}" ]]; then
+    info "Tailscale Serve already fronts 127.0.0.1:${GATEWAY_PORT} on port ${existing}."
     phase_ok "tailscale-serve"
     return 0
   fi
 
-  # Check if there's unmanaged Serve config (refuse to overwrite)
-  if echo "${serve_status}" | grep -qv "^$" && ! echo "${serve_status}" | grep -q "pai-anywhere"; then
-    if echo "${serve_status}" | grep -qE "https?://"; then
-      error "Existing unmanaged Tailscale Serve config detected."
-      error "pai-anywhere will not overwrite it. Remove it manually with 'tailscale serve reset'."
-      exit 1
-    fi
+  # Pick the tailnet HTTPS port.
+  local port pinned=0
+  if [[ -n "${SERVE_PORT}" ]]; then
+    port="${SERVE_PORT}"
+    pinned=1
+  else
+    port=443
   fi
 
-  info "Configuring Tailscale Serve (private HTTPS → 127.0.0.1:${GATEWAY_PORT}) …"
-  tailscale serve --bg "http://127.0.0.1:${GATEWAY_PORT}"
+  if host_port_in_use "${port}"; then
+    if (( pinned )); then
+      error "PAI_ANYWHERE_SERVE_PORT=${port} is already in use on this host."
+      error "Tailscale Serve would intercept tailnet traffic to that port before"
+      error "iptables, black-holing the existing service for every tailnet client."
+      error "Free the port or pick another one, then rerun install.sh."
+      exit 1
+    fi
+    if host_port_in_use "${SERVE_PORT_FALLBACK}"; then
+      error "Port ${port} and fallback ${SERVE_PORT_FALLBACK} are both in use on this host."
+      error "Set PAI_ANYWHERE_SERVE_PORT to a free port, then rerun install.sh."
+      exit 1
+    fi
+    warn "Port ${port} is already served by another process on this host."
+    warn "Using ${SERVE_PORT_FALLBACK} instead so the existing service keeps working."
+    port="${SERVE_PORT_FALLBACK}"
+  fi
+
+  # Refuse to overwrite an unmanaged Serve handler already on that port.
+  if tailscale serve status --json 2>/dev/null \
+       | jq -e --arg p "${port}" '(.TCP // {}) | has($p)' &>/dev/null; then
+    error "Tailscale Serve already has an unmanaged handler on port ${port}."
+    error "pai-anywhere will not overwrite it. Remove it manually with:"
+    error "  tailscale serve --https=${port} off"
+    exit 1
+  fi
+
+  info "Configuring Tailscale Serve (private HTTPS :${port} → 127.0.0.1:${GATEWAY_PORT}) …"
+  tailscale serve --bg --https="${port}" "http://127.0.0.1:${GATEWAY_PORT}"
+  SERVE_PORT="${port}"
   phase_ok "tailscale-serve"
 }
 
@@ -766,11 +835,17 @@ write_version_file() {
 print_done() {
   # Pairing code is NEVER written to stdout raw.
   # It is read from the 0600 file and shown only after a clear-screen + pause.
-  local tailnet_json dns_name tailnet_url
+  local tailnet_json dns_name tailnet_url serve_port
   tailnet_json="$(tailscale status --json 2>/dev/null || echo '{}')"
   dns_name="$(printf '%s' "${tailnet_json}" | jq -r '.Self.DNSName // empty' 2>/dev/null || true)"
   dns_name="${dns_name%.}"   # strip trailing dot
   tailnet_url="${dns_name:-<your-tailnet-hostname>}"
+  # Serve may have landed on a fallback port; the URL is wrong without it.
+  serve_port="$(serve_port_for_gateway)"
+  serve_port="${serve_port:-${SERVE_PORT:-443}}"
+  if [[ "${serve_port}" != "443" ]]; then
+    tailnet_url="${tailnet_url}:${serve_port}"
+  fi
   local pairing
   pairing="$(cat "${STATE_DIR}/pairing-code.txt")"
 
