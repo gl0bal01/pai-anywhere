@@ -272,13 +272,15 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 
 ## Implementation Notes
 
-- `install.sh` (bash, ~448 stripped LOC) is the user-facing entrypoint. Paste-installs on fresh Ubuntu/Debian VPS. Idempotent functions: preflight, install_apt_deps, install_tailscale_apt (signed apt repo, never `curl|sh`), create_pai_user, install_bun_for_pai (SHA-256 verified), fetch_and_verify_pai (SHA-256 verified, abort on mismatch), run_pai_as_pai, install_gateway_app, generate_secrets (20-char base64url pairing code, 0600), write_systemd_units, tailscale_up_if_needed, tailscale_serve_private (refuses Funnel), verify, print_done.
+- `install.sh` (bash, ~448 stripped LOC) is the user-facing entrypoint. Paste-installs on fresh Ubuntu/Debian VPS. Idempotent functions: preflight, install_apt_deps, install_tailscale_apt (signed apt repo, never `curl|sh`), create_pai_user, install_bun_for_pai (SHA-256 verified), fetch_and_verify_pai (SHA-256 verified, abort on mismatch), run_pai_as_pai, install_gateway_app, generate_secrets (20-char base64url pairing code, 0600), write_systemd_units, tailscale_up_if_needed, tailscale_serve_private (refuses Funnel; picks the tailnet HTTPS port), verify, print_done.
+- Serve port selection is load-bearing, not cosmetic. `tailscale serve --https=<port>` makes tailscaled intercept peer traffic to the tailnet IP inside netstack, **before** any iptables/DNAT rule. Claiming a port another service already owns (Traefik/nginx/Caddy) black-holes that service for every tailnet client while it keeps answering on loopback and public interfaces — so `curl` from the host still returns 200 and nothing lands in the proxy's access log. `tailscale serve status` cannot see such a service; `host_port_in_use()` probes the host directly (ss → netstat → docker published ports). Default is auto: prefer 443, fall back to `PAI_ANYWHERE_SERVE_PORT_FALLBACK` (10000). `PAI_ANYWHERE_SERVE_PORT` pins a port and disables the fallback — an occupied pinned port aborts the install. Never re-introduce a bare `tailscale serve --bg <url>`: it silently defaults to 443.
+- The live Serve port is read back from `tailscale serve status --json` (`serve_port_for_gateway()`), not assumed. `print_done` and `uninstall.sh` both depend on that lookup.
 - `uninstall.sh` reads `/etc/pai-anywhere/install-manifest.jsonl` (intent-log JSONL written by `install.sh`'s `record()` helper) and reverses only manifest-recorded paths. ENOENT = skip. EACCES/symlink/owner-mismatch = abort. Unowned files inside target dirs are preserved.
 - `src/cli.ts` (~130 LOC) ships only: `gateway`, `doctor`, `verify`, `reset-access`, `help`. No install/rollback subcommands — those live in bash.
 - `src/gateway/` (~370 LOC) — Bun.serve loopback gateway. 20-char base64url pairing code (≥120 bits entropy). Single global rate-limit bucket (10 attempts / 15 min, no XFF). HMAC-signed session cookie. Proxies all paths to Pulse on `127.0.0.1:31337` (Pulse uses absolute `/_next/*`, `/agents`, `/telos` paths) with method allowlist (`GET`/`POST`/`HEAD`), 1MB body cap, and rejection of `/__gateway/*` + path-traversal. `/terminal` returns 410 with roadmap link. Refuses to start if `PAI_ANYWHERE_PAIRING_CODE` env unset.
 - `src/doctor/` (~620 LOC, includes folded-in verify probes) — read-only host inspection + post-install probes.
 - Hash pinning: `scripts/pin-installer.sh` + `.github/workflows/pin-bot.yml` (weekly cron). PRs labeled `pin-bot` require `CODEOWNERS` review.
-- Tests: `bun test` (gateway unit + integration), `tests/*.sh` (preserve-claude, sha256-mismatch, uninstall-safety, partial-install-rollback, manifest-completeness, pairing-code-leak), `shellcheck -S warning` CI gate.
+- Tests: `bun test` (gateway unit + integration), `tests/*.sh` (preserve-claude, sha256-mismatch, uninstall-safety, partial-install-rollback, manifest-completeness, pairing-code-leak, serve-port-conflict), `shellcheck -S warning` CI gate. `serve-port-conflict.sh` extracts the port helpers out of the real `install.sh`, so it fails if the implementation drifts.
 - VPS test matrix evidence in `docs/VPS_TEST_RESULTS.md` (gated by Phase 6 manual run).
 
 ---
@@ -293,6 +295,7 @@ No shared secrets. No touching existing `~/.claude` or `~/.config/opencode` by d
 - Default install must not modify, move, delete, or rewrite the invoking user's `~/.claude`.
 - Default install must run PAI as a dedicated unprivileged `pai` account with managed profile `/home/pai/.claude`.
 - Never use Tailscale Funnel.
+- Never claim a tailnet Serve port without probing the host first; a port another service owns is never taken silently.
 - Never bind Pulse or the gateway to public interfaces.
 - Never edit Tailscale ACLs automatically in V1.
 - Never enable or tighten ufw unless SSH/current access safety is proven.

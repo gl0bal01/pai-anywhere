@@ -53,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.2.4/instal
 ```
 
 The installer prints a Tailscale login link — click it, authenticate. At the end it shows:
-- Your private URL (`https://<host>.<tailnet>.ts.net`)
+- Your private URL (`https://<host>.<tailnet>.ts.net`, with a port appended if the host already runs something on 443 — see [docs/TAILNET_ACCESS.md](./docs/TAILNET_ACCESS.md))
 - A 20-character pairing code
 - An SSH alias to copy
 
