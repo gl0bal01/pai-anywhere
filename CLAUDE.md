@@ -3,7 +3,7 @@
 > Companion repo for Daniel Miessler's [Personal AI Infrastructure (PAI)](https://github.com/danielmiessler/Personal_AI_Infrastructure).
 > Takes a fresh Linux VPS to a private, hardened, multi-device PAI host with a kid-simple setup path.
 
-**Phase:** v0.2.4 (hybrid bash + slim TS). Release gated on `docs/VPS_TEST_RESULTS.md` matrix evidence (Hetzner CX22 Ubuntu 22.04/24.04, DigitalOcean Debian 12) + mobile pairing flow. Browser terminal bridge deferred to a later release. This file is the build-time briefing.
+**Phase:** v0.3.0 (hybrid bash + slim TS). Release gated on `docs/VPS_TEST_RESULTS.md` matrix evidence (Hetzner CX22 Ubuntu 22.04/24.04, DigitalOcean Debian 12) + mobile pairing flow. Browser terminal bridge deferred to a later release. This file is the build-time briefing.
 
 ---
 

@@ -49,7 +49,7 @@ Ubuntu 22.04+, Debian 12+. $4–6/mo at Hetzner/DigitalOcean is enough. SSH in a
 On the VPS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.2.4/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/gl0bal01/pai-anywhere/v0.3.0/install.sh | sudo bash
 ```
 
 The installer prints a Tailscale login link — click it, authenticate. At the end it shows:
